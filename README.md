@@ -76,4 +76,3 @@ tpconenatd -p ${TP_PORT} -s ${NAT_IP} -i 10240 -x 65535
 ## TODO
 
 - 透传ToS, TTL
-- 转发ICMP (基于UDP的路由追踪)

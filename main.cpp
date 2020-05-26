@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <set>
+#include <exception>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -34,16 +35,15 @@ using namespace std;
     if (!(expr)) break; \
     char str[0x100]{}; \
     snprintf(str, sizeof(str) - 1, "%s(%d) "#expr, __FILE__, __LINE__); \
-    throw str; \
+    throw runtime_error(str); \
 } while(0)
 
 int run_as_daemon = 0;
 #define _printf if (!run_as_daemon) printf
 
 #define print_dec(x) printf(#x" = %d\n", x)
-#define print_u32(x) printf(#x" = %lu\n", x)
 #define print_ip(x) do { \
-    uint32_t y=ntohl(x); \
+    uint32_t y = ntohl(x); \
     printf(#x" = %d.%d.%d.%d\n", ((uint8_t*)&y)[3], ((uint8_t*)&y)[2], ((uint8_t*)&y)[1], ((uint8_t*)&y)[0]); \
 } while(0)
 
@@ -78,9 +78,9 @@ uint16_t tproxy_port = 0;
 uint16_t min_port = 10240;
 uint16_t max_port = 65535;
 uint32_t nat_ip = 0;
-time_t new_timeout = 30;
-time_t est_timeout = 300;
-time_t clean_interval = 10;
+uint32_t new_timeout = 30;
+uint32_t est_timeout = 300;
+uint32_t clean_interval = 10;
 uint16_t session_per_src = 65535;
 uint8_t nat_type = 1;
 
@@ -133,9 +133,9 @@ void perform_dst_nat(int fd) {
         FUCK(bind(tmp_fd, (struct sockaddr *) &dst, sizeof(struct sockaddr_in)) < 0);
         FUCK(sendto(tmp_fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) < 0);
         close(tmp_fd);
-    } catch (const char *msg) {
+    } catch (exception const &e) {
         close(tmp_fd);
-        throw msg;
+        throw runtime_error(e.what());
     }
 }
 
@@ -200,7 +200,7 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
     FUCK(sendto(nat_item->fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0);
 }
 
-int tproxy_recv(int fd, void *param) {
+int tproxy_recv(int fd) {
     struct msghdr msg{};
     struct sockaddr_in src{}, dst{};
     memset(&src, 0, sizeof(src));
@@ -277,7 +277,7 @@ void clean_expired(time_t now) {
 }
 
 static uint16_t update_check16(uint16_t check, uint16_t old_val, uint16_t new_val) {
-    uint32_t x = (~check & 0xffffu) + (~old_val & 0xffffu) + new_val;
+    uint32_t x = ((uint16_t) ~check & 0xffffu) + ((uint16_t) ~old_val & 0xffffu) + new_val;
     x = (x >> 16u) + (x & 0xffffu);
     return ~(x + (x >> 16u));
 }
@@ -291,19 +291,19 @@ static uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_va
 void icmp_recv(int fd) {
 #define RANGE_CHECK(x, y) FUCK((uint8_t *) x - data + y > data_len)
     static uint8_t data[0x10000]{};
-    struct sockaddr_in cli;
+    struct sockaddr_in cli{};
     socklen_t len = sizeof(cli);
     size_t data_len;
     FUCK((data_len = recvfrom(fd, data, sizeof(data), 0, (struct sockaddr *) &cli, &len)) < 0);
-    struct iphdr *ip = (struct iphdr *) data;
-    RANGE_CHECK(ip, (ip->ihl << 2));
-    struct icmphdr *icmp = (struct icmphdr *) ((uint8_t *) ip + (ip->ihl << 2));
+    auto *ip = (struct iphdr *) data;
+    RANGE_CHECK(ip, (ip->ihl << 2u));
+    auto *icmp = (struct icmphdr *) ((uint8_t *) ip + ((uint16_t) ip->ihl << 2u));
     RANGE_CHECK(icmp, sizeof(struct icmphdr));
     if (icmp->type != 11 || icmp->code != 0) return;
-    struct iphdr *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(icmp));
+    auto *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(struct icmphdr));
     RANGE_CHECK(ip_inner, sizeof(struct iphdr));
     if (ip_inner->protocol != IPPROTO_UDP) return;
-    struct udphdr *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + (ip_inner->ihl << 2));
+    auto *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + ((uint16_t) ip_inner->ihl << 2u));
     RANGE_CHECK(udp_inner, sizeof(struct udphdr));
     auto it = nat_port_fd.find(udp_inner->source);
     if (it == nat_port_fd.end()) return;
@@ -324,7 +324,7 @@ void write_pid(char *pid_file) {
     int fd;
     size_t len;
     struct flock lock{};
-    FUCK((fd = open(pid_file, O_RDWR | O_CREAT, 0666)) < 0);
+    FUCK((fd = open(pid_file, (uint32_t) O_RDWR | (uint32_t) O_CREAT, 0666)) < 0);
     lock.l_type = F_WRLCK;
     lock.l_whence = SEEK_SET;
     FUCK(fcntl(fd, F_SETLK, &lock) < 0);
@@ -366,7 +366,7 @@ void setup_tproxy() {
     serv.sin_port = htons(tproxy_port);
     FUCK(bind(fd, (const struct sockaddr *) &serv, sizeof(serv)) < 0);
 
-    ep_data_t *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
+    auto *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
     ep_data->fd = fd;
     ep_data->cb = (void *) tproxy_recv;
     ep_add(ep_fd, ep_data);
@@ -377,7 +377,7 @@ void setup_icmp() {
     FUCK((fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)) < 0);
     int opt = 1;
     FUCK(setsockopt(fd, IPPROTO_IP, IP_HDRINCL, &opt, sizeof(opt)) < 0);
-    ep_data_t *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
+    auto *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
     ep_data->fd = fd;
     ep_data->cb = (void *) icmp_recv;
     ep_add(ep_fd, ep_data);
@@ -387,7 +387,6 @@ int main(int argc, char *argv[]) {
     /*
      * TODO:
      *   1. TTL, ToS passthrough
-     *   2. ICMP passthrough [OK]
      */
     printf("TPConeNATd by claw6148\n\n");
     if (argc == 1) usage_and_exit();
@@ -459,9 +458,9 @@ int main(int argc, char *argv[]) {
         print_dec(min_port);
         print_dec(max_port);
         print_ip(nat_ip);
-        print_u32(new_timeout);
-        print_u32(est_timeout);
-        print_u32(clean_interval);
+        print_dec(new_timeout);
+        print_dec(est_timeout);
+        print_dec(clean_interval);
         print_dec(session_per_src);
         print_dec(nat_type);
 
@@ -479,14 +478,15 @@ int main(int argc, char *argv[]) {
         time_t last_tick = 0;
         for (;;) {
             static struct epoll_event ready_ev[0x10000];
-            int n = epoll_wait(ep_fd, ready_ev, sizeof(ready_ev) / sizeof(struct epoll_event), clean_interval * 1000);
+            int n = epoll_wait(ep_fd, ready_ev, sizeof(ready_ev) / sizeof(struct epoll_event),
+                               (int) clean_interval * 1000);
             FUCK(n < 0);
             while (n--) {
                 try {
                     auto *p = (ep_data_t *) ready_ev[n].data.ptr;
                     ((void (*)(int)) p->cb)(p->fd);
-                } catch (const char *msg) {
-                    perror(msg);
+                } catch (exception const &e) {
+                    perror(e.what());
                 }
             }
             time_t now = time(nullptr);
@@ -495,8 +495,8 @@ int main(int argc, char *argv[]) {
                 last_tick = now;
             }
         }
-    } catch (const char *msg) {
-        perror(msg);
+    } catch (exception const &e) {
+        perror(e.what());
     }
     return 0;
 }
