@@ -44,7 +44,7 @@ int run_as_daemon = 0;
 #define print_u32(x) printf(#x" = %lu\n", x)
 #define print_ip(x) do { \
     uint32_t y=ntohl(x); \
-    printf(#x" = %d.%d.%d.%d\n", ((uint8_t*)&y)[0], ((uint8_t*)&y)[1], ((uint8_t*)&y)[2], ((uint8_t*)&y)[3]); \
+    printf(#x" = %d.%d.%d.%d\n", ((uint8_t*)&y)[3], ((uint8_t*)&y)[2], ((uint8_t*)&y)[1], ((uint8_t*)&y)[0]); \
 } while(0)
 
 typedef struct {
@@ -289,17 +289,22 @@ static uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_va
 }
 
 void icmp_recv(int fd) {
+#define RANGE_CHECK(x, y) FUCK((uint8_t *) x - data + y > data_len)
     static uint8_t data[0x10000]{};
     struct sockaddr_in cli;
     socklen_t len = sizeof(cli);
     size_t data_len;
     FUCK((data_len = recvfrom(fd, data, sizeof(data), 0, (struct sockaddr *) &cli, &len)) < 0);
     struct iphdr *ip = (struct iphdr *) data;
+    RANGE_CHECK(ip, (ip->ihl << 2));
     struct icmphdr *icmp = (struct icmphdr *) ((uint8_t *) ip + (ip->ihl << 2));
+    RANGE_CHECK(icmp, sizeof(struct icmphdr));
     if (icmp->type != 11 || icmp->code != 0) return;
     struct iphdr *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(icmp));
+    RANGE_CHECK(ip_inner, sizeof(struct iphdr));
     if (ip_inner->protocol != IPPROTO_UDP) return;
     struct udphdr *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + (ip_inner->ihl << 2));
+    RANGE_CHECK(udp_inner, sizeof(struct udphdr));
     auto it = nat_port_fd.find(udp_inner->source);
     if (it == nat_port_fd.end()) return;
     nat_item_t *nat_item = dst_nat_map[(*it).second];
