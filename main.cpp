@@ -8,7 +8,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <cassert>
 #include <unordered_map>
 #include <unordered_set>
 #include <set>
@@ -18,6 +17,9 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <fcntl.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
 
 using namespace std;
 
@@ -68,6 +70,7 @@ struct pair_hash {
 
 unordered_map<pair<uint32_t, uint16_t>, nat_item_t, pair_hash> src_nat_map;
 unordered_map<int, nat_item_t *> dst_nat_map;
+unordered_map<uint16_t, int> nat_port_fd;
 unordered_map<int, unordered_set<pair<uint32_t, uint16_t>, pair_hash>> restricted_cone_set;
 unordered_map<uint32_t, uint16_t> src_session_counter;
 
@@ -83,15 +86,15 @@ uint8_t nat_type = 1;
 
 int ep_fd;
 
-int ep_add(int _ep_fd, ep_data_t *ep_data) {
+void ep_add(int _ep_fd, ep_data_t *ep_data) {
     struct epoll_event ep_ev{};
     ep_ev.events = EPOLLIN;
     ep_ev.data.ptr = ep_data;
-    return epoll_ctl(_ep_fd, EPOLL_CTL_ADD, ep_data->fd, &ep_ev);
+    FUCK(epoll_ctl(_ep_fd, EPOLL_CTL_ADD, ep_data->fd, &ep_ev) < 0);
 }
 
-int ep_del(int _ep_fd, int fd) {
-    return epoll_ctl(_ep_fd, EPOLL_CTL_DEL, fd, nullptr);
+void ep_del(int _ep_fd, int fd) {
+    FUCK(epoll_ctl(_ep_fd, EPOLL_CTL_DEL, fd, nullptr) < 0);
 }
 
 static int bind_port(uint16_t port_net) {
@@ -144,11 +147,9 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
         nat_item = &src_nat_map[key];
         memset(nat_item, 0, sizeof(nat_item_t));
         if (src_session_counter[src->sin_addr.s_addr] + 1 > session_per_src) {
-            {
-                char src_ip_str[0x20];
-                inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
-                _printf("%s reached session limit!\n", src_ip_str);
-            }
+            char src_ip_str[0x20];
+            inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
+            _printf("%s reached session limit!\n", src_ip_str);
             return;
         }
 
@@ -183,6 +184,7 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
         }
         memcpy(&nat_item->src, src, sizeof(struct sockaddr_in));
         dst_nat_map[nat_item->fd] = nat_item;
+        nat_port_fd[nat_item->nat_port] = nat_item->fd;
 
         nat_item->ep_data.fd = nat_item->fd;
         nat_item->ep_data.cb = (void *) perform_dst_nat;
@@ -263,6 +265,7 @@ void clean_expired(time_t now) {
             }
             src_session_counter[nat_item->src.sin_addr.s_addr]--;
             ep_del(ep_fd, nat_item->fd);
+            nat_port_fd.erase(nat_item->nat_port);
             close(nat_item->fd);
             restricted_cone_set.erase(nat_item->fd);
             dst_nat_map.erase(nat_item->fd);
@@ -271,6 +274,45 @@ void clean_expired(time_t now) {
         }
         ++it;
     }
+}
+
+static uint16_t update_check16(uint16_t check, uint16_t old_val, uint16_t new_val) {
+    uint32_t x = (~check & 0xffffu) + (~old_val & 0xffffu) + new_val;
+    x = (x >> 16u) + (x & 0xffffu);
+    return ~(x + (x >> 16u));
+}
+
+static uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_val) {
+    check = update_check16(check, old_val >> 16u, new_val >> 16u);
+    check = update_check16(check, old_val & 0xffffu, new_val & 0xffffu);
+    return check;
+}
+
+void icmp_recv(int fd) {
+    static uint8_t data[0x10000]{};
+    struct sockaddr_in cli;
+    socklen_t len = sizeof(cli);
+    size_t data_len;
+    FUCK((data_len = recvfrom(fd, data, sizeof(data), 0, (struct sockaddr *) &cli, &len)) < 0);
+    struct iphdr *ip = (struct iphdr *) data;
+    struct icmphdr *icmp = (struct icmphdr *) ((uint8_t *) ip + (ip->ihl << 2));
+    if (icmp->type != 11 || icmp->code != 0) return;
+    struct iphdr *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(icmp));
+    if (ip_inner->protocol != IPPROTO_UDP) return;
+    struct udphdr *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + (ip_inner->ihl << 2));
+    auto it = nat_port_fd.find(udp_inner->source);
+    if (it == nat_port_fd.end()) return;
+    nat_item_t *nat_item = dst_nat_map[(*it).second];
+
+    ip->check = update_check32(ip->check, ip->daddr, nat_item->src.sin_addr.s_addr);
+    ip->daddr = nat_item->src.sin_addr.s_addr;
+    ip_inner->check = update_check32(ip_inner->check, ip_inner->saddr, nat_item->src.sin_addr.s_addr);
+    ip_inner->saddr = nat_item->src.sin_addr.s_addr;
+    udp_inner->check = update_check16(udp_inner->check, udp_inner->source, nat_item->src.sin_port);
+    udp_inner->source = nat_item->src.sin_port;
+
+    FUCK(sendto(fd, data, data_len, 0, (struct sockaddr *) &nat_item->src,
+                sizeof(struct sockaddr_in)) < 0);
 }
 
 void write_pid(char *pid_file) {
@@ -304,11 +346,43 @@ void usage_and_exit() {
     exit(0);
 }
 
+void setup_tproxy() {
+    int fd;
+    FUCK((fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
+    int opt = 1;
+    FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)) < 0);
+    FUCK(setsockopt(fd, IPPROTO_IP, IP_TOS, &opt, sizeof(opt)) < 0);
+    FUCK(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
+    FUCK(setsockopt(fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
+    FUCK(setsockopt(fd, SOL_IP, IP_RECVORIGDSTADDR, &opt, sizeof(opt)) < 0);
+    struct sockaddr_in serv{};
+    serv.sin_family = AF_INET;
+    serv.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv.sin_port = htons(tproxy_port);
+    FUCK(bind(fd, (const struct sockaddr *) &serv, sizeof(serv)) < 0);
+
+    ep_data_t *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
+    ep_data->fd = fd;
+    ep_data->cb = (void *) tproxy_recv;
+    ep_add(ep_fd, ep_data);
+}
+
+void setup_icmp() {
+    int fd;
+    FUCK((fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)) < 0);
+    int opt = 1;
+    FUCK(setsockopt(fd, IPPROTO_IP, IP_HDRINCL, &opt, sizeof(opt)) < 0);
+    ep_data_t *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
+    ep_data->fd = fd;
+    ep_data->cb = (void *) icmp_recv;
+    ep_add(ep_fd, ep_data);
+}
+
 int main(int argc, char *argv[]) {
     /*
      * TODO:
      *   1. TTL, ToS passthrough
-     *   2. ICMP passthrough
+     *   2. ICMP passthrough [OK]
      */
     printf("TPConeNATd by claw6148\n\n");
     if (argc == 1) usage_and_exit();
@@ -392,28 +466,13 @@ int main(int argc, char *argv[]) {
         if (strlen(pid_file)) write_pid(pid_file);
 
         srandom(time(nullptr));
-        int tproxy_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        FUCK(tproxy_fd < 0);
-        int opt = 1;
-        FUCK(setsockopt(tproxy_fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)) < 0);
-        FUCK(setsockopt(tproxy_fd, IPPROTO_IP, IP_TOS, &opt, sizeof(opt)) < 0);
-        FUCK(setsockopt(tproxy_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
-        FUCK(setsockopt(tproxy_fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
-        FUCK(setsockopt(tproxy_fd, SOL_IP, IP_RECVORIGDSTADDR, &opt, sizeof(opt)) < 0);
-        struct sockaddr_in serv{};
-        serv.sin_family = AF_INET;
-        serv.sin_addr.s_addr = htonl(INADDR_ANY);
-        serv.sin_port = htons(tproxy_port);
-        FUCK(bind(tproxy_fd, (const struct sockaddr *) &serv, sizeof(serv)) < 0);
-
         ep_fd = epoll_create1(0);
-        ep_data_t ep_data = {
-                .fd=tproxy_fd,
-                .cb=(void *) tproxy_recv,
-        };
-        assert(ep_add(ep_fd, &ep_data) >= 0);
+
+        setup_icmp();
+        setup_tproxy();
+
         time_t last_tick = 0;
-        while (opt) {
+        for (;;) {
             static struct epoll_event ready_ev[0x10000];
             int n = epoll_wait(ep_fd, ready_ev, sizeof(ready_ev) / sizeof(struct epoll_event), clean_interval * 1000);
             FUCK(n < 0);
