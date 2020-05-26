@@ -21,6 +21,9 @@
 #include <netinet/ip_icmp.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
+#include <syslog.h>
+#include <csignal>
+#include <cinttypes>
 
 using namespace std;
 
@@ -33,20 +36,40 @@ using namespace std;
 
 #define FUCK(expr) do { \
     if (!(expr)) break; \
-    char str[0x100]{}; \
-    snprintf(str, sizeof(str) - 1, "%s(%d) "#expr, __FILE__, __LINE__); \
+    char str[0x20]{}; \
+    snprintf(str, sizeof(str) - 1, "%d", __LINE__); \
     throw runtime_error(str); \
 } while(0)
 
 int run_as_daemon = 0;
-#define _printf if (!run_as_daemon) printf
+uint8_t log_level = LOG_INFO;
 
-#define print_dec(x) printf(#x" = %d\n", x)
-#define print_ip(x) do { \
-    uint32_t y = ntohl(x); \
-    printf(#x" = %d.%d.%d.%d\n", ((uint8_t*)&y)[3], ((uint8_t*)&y)[2], ((uint8_t*)&y)[1], ((uint8_t*)&y)[0]); \
+char log_level_str[][8] = {
+        "EMERG",
+        "ALERT",
+        "CRIT",
+        "ERR",
+        "WARNING",
+        "NOTICE",
+        "INFO",
+        "DEBUG"
+};
+
+#define LOG(level, fmt, ...) do { \
+    if (level > log_level) break; \
+    if (run_as_daemon) \
+        syslog(level, "[%s] " fmt"\n", log_level_str[level], ##__VA_ARGS__); \
+    else \
+        fprintf(level <= LOG_ERR ? stderr : stdout, "[%s] " fmt"\n", log_level_str[level], ##__VA_ARGS__); \
 } while(0)
-#define print_bool(x) printf(#x" = %s\n", x?"true":"false")
+
+#define PERROR(msg) LOG(LOG_CRIT, "line = %s, err = %s", msg, strerror(errno))
+
+#define PRINT_DEC(x) LOG(LOG_INFO, #x" = %d", x)
+#define PRINT_IP(x) do { \
+    uint32_t y = ntohl(x); \
+    LOG(LOG_INFO, #x" = %d.%d.%d.%d", ((uint8_t*)&y)[3], ((uint8_t*)&y)[2], ((uint8_t*)&y)[1], ((uint8_t*)&y)[0]); \
+} while(0)
 
 typedef struct {
     int fd;
@@ -54,12 +77,15 @@ typedef struct {
 } ep_data_t;
 
 typedef struct {
-    int fd;
-    uint8_t reply;
-    uint16_t nat_port;
-    ep_data_t ep_data;
+    time_t create_time;
     time_t active_time;
+    bool reply;
+    uint16_t nat_port;
+    uint64_t rx;
+    uint64_t tx;
+    int fd;
     struct sockaddr_in src;
+    ep_data_t ep_data;
 } nat_item_t;
 
 struct pair_hash {
@@ -122,7 +148,7 @@ void perform_dst_nat(int fd) {
         restricted_cone_set[fd].end()) {
         return;
     }
-    nat_item->reply = 1;
+    nat_item->reply = true;
     if (!no_inbound_refresh) nat_item->active_time = time(nullptr);
     int tmp_fd = 0;
     FUCK((tmp_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
@@ -134,6 +160,7 @@ void perform_dst_nat(int fd) {
         FUCK(setsockopt(tmp_fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
         FUCK(bind(tmp_fd, (struct sockaddr *) &dst, sizeof(struct sockaddr_in)) < 0);
         FUCK(sendto(tmp_fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) < 0);
+        nat_item->rx += data_len;
         close(tmp_fd);
     } catch (exception const &e) {
         close(tmp_fd);
@@ -151,7 +178,7 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
         if (src_session_counter[src->sin_addr.s_addr] + 1 > session_per_src) {
             char src_ip_str[0x20];
             inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
-            _printf("%s session limit reached!\n", src_ip_str);
+            LOG(LOG_ERR, "%s session limit reached!", src_ip_str);
             return;
         }
 
@@ -169,7 +196,7 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
             }
         }
         if (nat_item->fd == 0) {
-            _printf("No ports available!\n");
+            LOG(LOG_ERR, "No ports available!");
             src_nat_map.erase(key);
             return;
         }
@@ -179,10 +206,10 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
             inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
             char nat_ip_str[0x20];
             inet_ntop(AF_INET, &nat_ip, nat_ip_str, sizeof(nat_ip_str));
-            _printf("+ %s:%d <-> %s:%d\n",
-                    src_ip_str, ntohs(src->sin_port),
-                    nat_ip_str, ntohs(nat_item->nat_port)
-                );
+            LOG(LOG_INFO, "add, src = %s:%d, nat = %s:%d",
+                src_ip_str, ntohs(src->sin_port),
+                nat_ip_str, ntohs(nat_item->nat_port)
+            );
         }
         memcpy(&nat_item->src, src, sizeof(struct sockaddr_in));
         dst_nat_map[nat_item->fd] = nat_item;
@@ -191,15 +218,18 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
         nat_item->ep_data.fd = nat_item->fd;
         nat_item->ep_data.cb = (void *) perform_dst_nat;
         ep_add(ep_fd, &nat_item->ep_data);
+        nat_item->active_time = time(nullptr);
+        nat_item->create_time = nat_item->active_time;
     } else {
         nat_item = &(*it).second;
+        nat_item->active_time = time(nullptr);
     }
-    nat_item->active_time = time(nullptr);
     if (nat_type > 1) {
         restricted_cone_set[nat_item->fd].insert(make_pair(dst->sin_addr.s_addr, nat_type > 2 ? dst->sin_port : 0));
     }
     FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
     FUCK(sendto(nat_item->fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0);
+    nat_item->tx += data_len;
 }
 
 int tproxy_recv(int fd) {
@@ -249,6 +279,8 @@ int tproxy_recv(int fd) {
     return 0;
 }
 
+uint16_t last_live = 0;
+
 void clean_expired(time_t now) {
     for (auto it = src_nat_map.begin(); it != src_nat_map.end();) {
         nat_item_t *nat_item = &(*it).second;
@@ -260,10 +292,15 @@ void clean_expired(time_t now) {
                 inet_ntop(AF_INET, &nat_item->src.sin_addr, src_ip_str, sizeof(src_ip_str));
                 char nat_ip_str[0x20];
                 inet_ntop(AF_INET, &nat_ip, nat_ip_str, sizeof(nat_ip_str));
-                _printf("- %s:%d <-> %s:%d\n",
-                        src_ip_str, ntohs(nat_item->src.sin_port),
-                        nat_ip_str, ntohs(nat_item->nat_port)
-                    );
+                LOG(LOG_INFO, "del, src = %s:%d, nat = %s:%d, duration = %lu, tx = %"
+                        PRIu64
+                        ", rx = %"
+                        PRIu64,
+                    src_ip_str, ntohs(nat_item->src.sin_port),
+                    nat_ip_str, ntohs(nat_item->nat_port),
+                    nat_item->active_time - nat_item->create_time,
+                    nat_item->tx, nat_item->rx
+                );
             }
             src_session_counter[nat_item->src.sin_addr.s_addr]--;
             ep_del(ep_fd, nat_item->fd);
@@ -275,6 +312,11 @@ void clean_expired(time_t now) {
             continue;
         }
         ++it;
+    }
+    uint16_t live = src_nat_map.size();
+    if (last_live != live) {
+        LOG(LOG_DEBUG, "live = %lu", live);
+        last_live = live;
     }
 }
 
@@ -350,7 +392,8 @@ void usage_and_exit() {
     printf("  -c Clean interval (default: 10)\n");
     printf("  -b No inbound refresh\n");
     printf("  -f PID file\n");
-    printf("  -d Run as daemon\n");
+    printf("  -l Log level (default: 6. INFO)\n");
+    printf("  -d Run as daemon, log to syslog\n");
     exit(0);
 }
 
@@ -360,7 +403,6 @@ void setup_tproxy() {
     int opt = 1;
     FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, IPPROTO_IP, IP_TOS, &opt, sizeof(opt)) < 0);
-    FUCK(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, SOL_IP, IP_RECVORIGDSTADDR, &opt, sizeof(opt)) < 0);
     struct sockaddr_in serv{};
@@ -386,6 +428,9 @@ void setup_icmp() {
     ep_add(ep_fd, ep_data);
 }
 
+void bye(int) {
+}
+
 int main(int argc, char *argv[]) {
     /*
      * TODO:
@@ -395,7 +440,7 @@ int main(int argc, char *argv[]) {
     if (argc == 1) usage_and_exit();
     try {
         char pid_file[0x100]{};
-        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:c:bf:d")) != -1;) {
+        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:c:bf:l:d")) != -1;) {
             switch (ch) {
                 case 'h':
                     usage_and_exit();
@@ -433,6 +478,9 @@ int main(int argc, char *argv[]) {
                 case 'f':
                     strcpy(pid_file, optarg);
                     break;
+                case 'l':
+                    log_level = stol(optarg);
+                    break;
                 case 'd':
                     run_as_daemon = 1;
                     break;
@@ -460,21 +508,24 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        print_dec(tproxy_port);
-        print_dec(min_port);
-        print_dec(max_port);
-        print_ip(nat_ip);
-        print_dec(new_timeout);
-        print_dec(est_timeout);
-        print_dec(clean_interval);
-        print_dec(session_per_src);
-        print_dec(nat_type);
-        print_bool(no_inbound_refresh);
+        PRINT_DEC(tproxy_port);
+        PRINT_DEC(min_port);
+        PRINT_DEC(max_port);
+        PRINT_IP(nat_ip);
+        PRINT_DEC(new_timeout);
+        PRINT_DEC(est_timeout);
+        PRINT_DEC(clean_interval);
+        PRINT_DEC(session_per_src);
+        PRINT_DEC(nat_type);
+        PRINT_DEC(no_inbound_refresh);
+        PRINT_DEC(log_level);
 
-        printf("\nStarted!\n");
+        LOG(LOG_INFO, "Started!");
 
         if (run_as_daemon) FUCK(daemon(1, 1) < 0);
         if (strlen(pid_file)) write_pid(pid_file);
+        signal(SIGINT, bye);
+        signal(SIGTERM, bye);
 
         srandom(time(nullptr));
         ep_fd = epoll_create1(0);
@@ -493,7 +544,7 @@ int main(int argc, char *argv[]) {
                     auto *p = (ep_data_t *) ready_ev[n].data.ptr;
                     ((void (*)(int)) p->cb)(p->fd);
                 } catch (exception const &e) {
-                    perror(e.what());
+                    PERROR(e.what());
                 }
             }
             time_t now = time(nullptr);
@@ -503,7 +554,7 @@ int main(int argc, char *argv[]) {
             }
         }
     } catch (exception const &e) {
-        perror(e.what());
+        PERROR(e.what());
     }
     return 0;
 }

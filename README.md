@@ -18,7 +18,8 @@
 -c Clean interval (default: 10)
 -b No inbound refresh
 -f PID file
--d Run as daemon
+-l Log level (default: 3. ERR)
+-d Run as daemon, log to syslog
 ```
 
 ## 配置示例
