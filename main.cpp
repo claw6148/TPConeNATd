@@ -46,6 +46,7 @@ int run_as_daemon = 0;
     uint32_t y = ntohl(x); \
     printf(#x" = %d.%d.%d.%d\n", ((uint8_t*)&y)[3], ((uint8_t*)&y)[2], ((uint8_t*)&y)[1], ((uint8_t*)&y)[0]); \
 } while(0)
+#define print_bool(x) printf(#x" = %s\n", x?"true":"false")
 
 typedef struct {
     int fd;
@@ -83,6 +84,7 @@ uint32_t est_timeout = 300;
 uint32_t clean_interval = 10;
 uint16_t session_per_src = 65535;
 uint8_t nat_type = 1;
+bool no_inbound_refresh = false;
 
 int ep_fd;
 
@@ -121,7 +123,7 @@ void perform_dst_nat(int fd) {
         return;
     }
     nat_item->reply = 1;
-    nat_item->active_time = time(nullptr);
+    if (!no_inbound_refresh) nat_item->active_time = time(nullptr);
     int tmp_fd = 0;
     FUCK((tmp_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
     int opt = 1;
@@ -140,7 +142,7 @@ void perform_dst_nat(int fd) {
 }
 
 void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint8_t ttl, void *data, size_t data_len) {
-    auto key = make_pair(src->sin_addr.s_addr, src->sin_port); // src->sin_addr.s_addr << 16u | src->sin_port;
+    auto key = make_pair(src->sin_addr.s_addr, src->sin_port);
     nat_item_t *nat_item;
     auto it = src_nat_map.find(key);
     if (it == src_nat_map.end()) {
@@ -149,7 +151,7 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
         if (src_session_counter[src->sin_addr.s_addr] + 1 > session_per_src) {
             char src_ip_str[0x20];
             inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
-            _printf("%s reached session limit!\n", src_ip_str);
+            _printf("%s session limit reached!\n", src_ip_str);
             return;
         }
 
@@ -341,11 +343,12 @@ void usage_and_exit() {
     printf("  -i Minimum port (default: 10240)\n");
     printf("  -x Maximum port (default: 65535)\n");
     printf("  -s NAT ip (default: 0.0.0.0, depends on system)\n");
-    printf("  -n NEW timeout (default: 30)\n");
+    printf("  -n NEW(no reply) timeout (default: 30)\n");
     printf("  -e ESTABLISHED timeout (default: 300)\n");
     printf("  -o Session limit per source ip (default: 65535, unlimited)\n");
     printf("  -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: 1)\n");
     printf("  -c Clean interval (default: 10)\n");
+    printf("  -b No inbound refresh\n");
     printf("  -f PID file\n");
     printf("  -d Run as daemon\n");
     exit(0);
@@ -392,7 +395,7 @@ int main(int argc, char *argv[]) {
     if (argc == 1) usage_and_exit();
     try {
         char pid_file[0x100]{};
-        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:c:f:d")) != -1;) {
+        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:c:bf:d")) != -1;) {
             switch (ch) {
                 case 'h':
                     usage_and_exit();
@@ -423,6 +426,9 @@ int main(int argc, char *argv[]) {
                     break;
                 case 'c':
                     clean_interval = stol(optarg);
+                    break;
+                case 'b':
+                    no_inbound_refresh = true;
                     break;
                 case 'f':
                     strcpy(pid_file, optarg);
@@ -463,6 +469,7 @@ int main(int argc, char *argv[]) {
         print_dec(clean_interval);
         print_dec(session_per_src);
         print_dec(nat_type);
+        print_bool(no_inbound_refresh);
 
         printf("\nStarted!\n");
 

@@ -11,11 +11,12 @@
 -i Minimum port (default: 10240)
 -x Maximum port (default: 65535)
 -s NAT ip (default: 0.0.0.0, depends on system)
--n NEW timeout (default: 30)
+-n NEW(no reply) timeout (default: 30)
 -e ESTABLISHED timeout (default: 300)
 -o Session limit per source ip (default: 65535, unlimited)
 -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: 1)
 -c Clean interval (default: 10)
+-b No inbound refresh
 -f PID file
 -d Run as daemon
 ```
