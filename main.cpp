@@ -431,6 +431,11 @@ void setup_icmp() {
 void bye(int) {
 }
 
+void adjust_sched() {
+    int p = sched_get_priority_max(SCHED_FIFO);
+    FUCK(sched_setscheduler(getpid(), SCHED_FIFO, (struct sched_param *) &p) < 0);
+}
+
 int main(int argc, char *argv[]) {
     /*
      * TODO:
@@ -524,8 +529,11 @@ int main(int argc, char *argv[]) {
 
         if (run_as_daemon) FUCK(daemon(1, 1) < 0);
         if (strlen(pid_file)) write_pid(pid_file);
+
         signal(SIGINT, bye);
         signal(SIGTERM, bye);
+
+        adjust_sched();
 
         srandom(time(nullptr));
         ep_fd = epoll_create1(0);
