@@ -71,6 +71,8 @@ char log_level_str[][8] = {
     LOG(LOG_INFO, #x" = %d.%d.%d.%d", ((uint8_t*)&y)[3], ((uint8_t*)&y)[2], ((uint8_t*)&y)[1], ((uint8_t*)&y)[0]); \
 } while(0)
 
+#define UNUSED(x) (void)(x)
+
 typedef struct {
     int fd;
     void *cb;
@@ -125,6 +127,57 @@ void ep_del(int _ep_fd, int fd) {
     FUCK(epoll_ctl(_ep_fd, EPOLL_CTL_DEL, fd, nullptr) < 0);
 }
 
+static uint16_t update_check16(uint16_t check, uint16_t old_val, uint16_t new_val) {
+    uint32_t x = ((uint16_t) ~check & 0xffffu) + ((uint16_t) ~old_val & 0xffffu) + new_val;
+    x = (x >> 16u) + (x & 0xffffu);
+    return ~(x + (x >> 16u));
+}
+
+static uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_val) {
+    check = update_check16(check, old_val >> 16u, new_val >> 16u);
+    check = update_check16(check, old_val & 0xffffu, new_val & 0xffffu);
+    return check;
+}
+
+void icmp_recv(int fd,
+               struct sockaddr_in *src,
+               struct sockaddr_in *dst,
+               uint8_t ttl,
+               uint8_t tos,
+               void *data,
+               ssize_t data_len
+) {
+    UNUSED(fd);
+    UNUSED(src);
+    UNUSED(dst);
+    UNUSED(ttl);
+    UNUSED(tos);
+#define RANGE_CHECK(x, y) FUCK((uint8_t *) x - (uint8_t *)data + y > data_len)
+    auto *ip = (struct iphdr *) data;
+    RANGE_CHECK(ip, (ip->ihl << 2u));
+    auto *icmp = (struct icmphdr *) ((uint8_t *) ip + ((uint16_t) ip->ihl << 2u));
+    RANGE_CHECK(icmp, sizeof(struct icmphdr));
+    if (icmp->type != 11 || icmp->code != 0) return;
+    auto *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(struct icmphdr));
+    RANGE_CHECK(ip_inner, sizeof(struct iphdr));
+    if (ip_inner->protocol != IPPROTO_UDP) return;
+    auto *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + ((uint16_t) ip_inner->ihl << 2u));
+    RANGE_CHECK(udp_inner, sizeof(struct udphdr));
+    auto it = nat_port_fd.find(udp_inner->source);
+    if (it == nat_port_fd.end()) return;
+    nat_item_t *nat_item = dst_nat_map[(*it).second];
+
+    ip->check = update_check32(ip->check, ip->daddr, nat_item->src.sin_addr.s_addr);
+    ip->daddr = nat_item->src.sin_addr.s_addr;
+    ip_inner->check = update_check32(ip_inner->check, ip_inner->saddr, nat_item->src.sin_addr.s_addr);
+    ip_inner->saddr = nat_item->src.sin_addr.s_addr;
+    udp_inner->check = update_check16(udp_inner->check, udp_inner->source, nat_item->src.sin_port);
+    udp_inner->source = nat_item->src.sin_port;
+
+    FUCK(sendto(fd, data, data_len, 0, (struct sockaddr *) &nat_item->src,
+                sizeof(struct sockaddr_in)) < 0);
+}
+
 static int bind_port(uint16_t port_net) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return 0;
@@ -132,43 +185,63 @@ static int bind_port(uint16_t port_net) {
     serv.sin_family = AF_INET;
     serv.sin_port = port_net;
     serv.sin_addr.s_addr = nat_ip;
-    if (bind(fd, (const sockaddr *) &serv, sizeof(serv)) < 0) return 0;
+    int opt = 1;
+    FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)) < 0);
+    FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)) < 0);
+    if (bind(fd, (const sockaddr *) &serv, sizeof(serv)) < 0) {
+        close(fd);
+        fd = 0;
+    }
     return fd;
 }
 
-void perform_dst_nat(int fd) {
-    struct sockaddr_in dst{};
-    static uint8_t data[0x10000];
-    socklen_t sock_len = sizeof(struct sockaddr);
-    size_t data_len = recvfrom(fd, data, sizeof(data), 0, (struct sockaddr *) &dst, &sock_len);
-    FUCK(data_len < 0);
+void perform_dst_nat(int fd,
+                     struct sockaddr_in *src,
+                     struct sockaddr_in *dst,
+                     uint8_t ttl,
+                     uint8_t tos,
+                     void *data,
+                     ssize_t data_len
+) {
+    UNUSED(dst);
     nat_item_t *nat_item = dst_nat_map[fd];
     if (nat_type > 1 &&
-        restricted_cone_set[fd].find(make_pair(dst.sin_addr.s_addr, nat_type > 2 ? dst.sin_port : 0)) ==
+        restricted_cone_set[fd].find(make_pair(src->sin_addr.s_addr, nat_type > 2 ? src->sin_port : 0)) ==
         restricted_cone_set[fd].end()) {
         return;
     }
     nat_item->reply = true;
     if (!no_inbound_refresh) nat_item->active_time = time(nullptr);
+
     int tmp_fd = 0;
     FUCK((tmp_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
     int opt = 1;
-    try {
-        uint8_t ttl = 0xFF;
-        FUCK(setsockopt(tmp_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
-        FUCK(setsockopt(tmp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
-        FUCK(setsockopt(tmp_fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
-        FUCK(bind(tmp_fd, (struct sockaddr *) &dst, sizeof(struct sockaddr_in)) < 0);
-        FUCK(sendto(tmp_fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) < 0);
-        nat_item->rx += data_len;
-        close(tmp_fd);
-    } catch (exception const &e) {
-        close(tmp_fd);
-        throw runtime_error(e.what());
-    }
+    FUCK(setsockopt(tmp_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
+    FUCK(setsockopt(tmp_fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
+    FUCK(setsockopt(tmp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
+    FUCK(setsockopt(tmp_fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
+    FUCK(bind(tmp_fd, (struct sockaddr *) src, sizeof(struct sockaddr_in)) < 0);
+    FUCK(sendto(tmp_fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) < 0);
+    nat_item->rx += data_len;
+    close(tmp_fd);
 }
 
-void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint8_t ttl, void *data, size_t data_len) {
+void perform_src_nat(int fd,
+                     struct sockaddr_in *src,
+                     struct sockaddr_in *dst,
+                     uint8_t ttl,
+                     uint8_t tos,
+                     void *data,
+                     ssize_t data_len
+) {
+    UNUSED(fd);
+    uint32_t src_addr_host = ntohl(src->sin_addr.s_addr);
+    uint32_t dst_addr_host = ntohl(dst->sin_addr.s_addr);
+    if ((src_addr_host == 0 || dst_addr_host == 0) ||
+        (src_addr_host >= 0xE0000000 || dst_addr_host >= 0xE0000000) ||
+        ((src_addr_host & 0xFFu) == 0xFF || (dst_addr_host & 0xFFu) == 0xFF)) {
+        return;
+    }
     auto key = make_pair(src->sin_addr.s_addr, src->sin_port);
     nat_item_t *nat_item;
     auto it = src_nat_map.find(key);
@@ -184,14 +257,16 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
 
         set<uint16_t> visited_port;
         for (int i = 0; i < (max_port - min_port); ++i) {
+            uint16_t nat_port;
             do {
-                nat_item->nat_port = min_port + (random() % (max_port - min_port + 1));
-            } while (visited_port.find(nat_item->nat_port) != visited_port.end());
-            visited_port.insert(nat_item->nat_port);
-            nat_item->nat_port = htons(nat_item->nat_port);
-            int fd = bind_port(nat_item->nat_port);
-            if (fd) {
-                nat_item->fd = fd;
+                nat_port = min_port + (random() % (max_port - min_port + 1));
+            } while (visited_port.find(nat_port) != visited_port.end());
+            visited_port.insert(nat_port);
+            nat_port = htons(nat_port);
+            int bind_fd = bind_port(nat_port);
+            if (bind_fd) {
+                nat_item->fd = bind_fd;
+                nat_item->nat_port = nat_port;
                 break;
             }
         }
@@ -201,16 +276,16 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
             return;
         }
         src_session_counter[src->sin_addr.s_addr]++;
-        {
-            char src_ip_str[0x20];
-            inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
-            char nat_ip_str[0x20];
-            inet_ntop(AF_INET, &nat_ip, nat_ip_str, sizeof(nat_ip_str));
-            LOG(LOG_INFO, "add, src = %s:%d, nat = %s:%d",
-                src_ip_str, ntohs(src->sin_port),
-                nat_ip_str, ntohs(nat_item->nat_port)
-            );
-        }
+
+        char src_ip_str[0x20];
+        inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
+        char nat_ip_str[0x20];
+        inet_ntop(AF_INET, &nat_ip, nat_ip_str, sizeof(nat_ip_str));
+        LOG(LOG_INFO, "add, src = %s:%d, nat = %s:%d",
+            src_ip_str, ntohs(src->sin_port),
+            nat_ip_str, ntohs(nat_item->nat_port)
+        );
+
         memcpy(&nat_item->src, src, sizeof(struct sockaddr_in));
         dst_nat_map[nat_item->fd] = nat_item;
         nat_port_fd[nat_item->nat_port] = nat_item->fd;
@@ -218,6 +293,7 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
         nat_item->ep_data.fd = nat_item->fd;
         nat_item->ep_data.cb = (void *) perform_dst_nat;
         ep_add(ep_fd, &nat_item->ep_data);
+
         nat_item->active_time = time(nullptr);
         nat_item->create_time = nat_item->active_time;
     } else {
@@ -228,58 +304,63 @@ void perform_src_nat(int, struct sockaddr_in *src, struct sockaddr_in *dst, uint
         restricted_cone_set[nat_item->fd].insert(make_pair(dst->sin_addr.s_addr, nat_type > 2 ? dst->sin_port : 0));
     }
     FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
+    FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
     FUCK(sendto(nat_item->fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0);
     nat_item->tx += data_len;
 }
 
-int tproxy_recv(int fd) {
-    struct msghdr msg{};
+void ep_recv(int fd, void *cb) {
     struct sockaddr_in src{}, dst{};
-    memset(&src, 0, sizeof(src));
-    memset(&dst, 0, sizeof(dst));
-    uint8_t ctl[0x100];
-
-    msg.msg_name = &src;
-    msg.msg_namelen = sizeof(src);
-    msg.msg_control = ctl;
-    msg.msg_controllen = sizeof(ctl);
 
     static uint8_t data[0x10000];
-    struct iovec iov[1]{};
-    iov[0].iov_base = data;
-    iov[0].iov_len = sizeof(data);
+    struct iovec iov{
+            .iov_base = data,
+            .iov_len = sizeof(data),
+    };
 
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 1;
+    uint8_t ctl[0x100];
+    struct msghdr msg{
+            .msg_name = &src,
+            .msg_namelen = sizeof(src),
+            .msg_iov = &iov,
+            .msg_iovlen = 1,
+            .msg_control = ctl,
+            .msg_controllen = sizeof(ctl),
+    };
 
-    int recv_len;
-    FUCK((recv_len = recvmsg(fd, &msg, 0)) < 0);
+    ssize_t data_len;
+    FUCK((data_len = recvmsg(fd, &msg, 0)) < 0);
 
-    bool found_dst_addr = false;
     uint16_t ttl = 0xFF;
+    uint16_t tos = 0x00;
     for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
         if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGADDRS) {
             memcpy(&dst, CMSG_DATA(cmsg), sizeof(struct sockaddr_in));
             dst.sin_family = AF_INET;
-            found_dst_addr = true;
         }
         if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL) {
             ttl = *CMSG_DATA(cmsg);
         }
+        if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TOS) {
+            tos = *CMSG_DATA(cmsg);
+        }
     }
-    if (!found_dst_addr) return 0;
-    uint32_t src_addr_host = ntohl(src.sin_addr.s_addr);
-    uint32_t dst_addr_host = ntohl(dst.sin_addr.s_addr);
-    if ((src_addr_host == 0 || dst_addr_host == 0) ||
-        (src_addr_host >= 0xE0000000 || dst_addr_host >= 0xE0000000) ||
-        ((src_addr_host & 0xFFu) == 0xFF || (dst_addr_host & 0xFFu) == 0xFF)) {
-        return 0;
-    }
-    perform_src_nat(fd, &src, &dst, ttl, data, recv_len);
-    return 0;
+    ((void (*)(int,
+               struct sockaddr_in *,
+               struct sockaddr_in *,
+               uint8_t,
+               uint8_t,
+               void *,
+               ssize_t
+    )) cb)(fd,
+           &src,
+           &dst,
+           ttl,
+           tos,
+           data,
+           data_len
+    );
 }
-
-uint16_t last_live = 0;
 
 void clean_expired(time_t now) {
     for (auto it = src_nat_map.begin(); it != src_nat_map.end();) {
@@ -313,55 +394,7 @@ void clean_expired(time_t now) {
         }
         ++it;
     }
-    uint16_t live = src_nat_map.size();
-    if (last_live != live) {
-        LOG(LOG_DEBUG, "live = %lu", live);
-        last_live = live;
-    }
-}
-
-static uint16_t update_check16(uint16_t check, uint16_t old_val, uint16_t new_val) {
-    uint32_t x = ((uint16_t) ~check & 0xffffu) + ((uint16_t) ~old_val & 0xffffu) + new_val;
-    x = (x >> 16u) + (x & 0xffffu);
-    return ~(x + (x >> 16u));
-}
-
-static uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_val) {
-    check = update_check16(check, old_val >> 16u, new_val >> 16u);
-    check = update_check16(check, old_val & 0xffffu, new_val & 0xffffu);
-    return check;
-}
-
-void icmp_recv(int fd) {
-#define RANGE_CHECK(x, y) FUCK((uint8_t *) x - data + y > data_len)
-    static uint8_t data[0x10000]{};
-    struct sockaddr_in cli{};
-    socklen_t len = sizeof(cli);
-    size_t data_len;
-    FUCK((data_len = recvfrom(fd, data, sizeof(data), 0, (struct sockaddr *) &cli, &len)) < 0);
-    auto *ip = (struct iphdr *) data;
-    RANGE_CHECK(ip, (ip->ihl << 2u));
-    auto *icmp = (struct icmphdr *) ((uint8_t *) ip + ((uint16_t) ip->ihl << 2u));
-    RANGE_CHECK(icmp, sizeof(struct icmphdr));
-    if (icmp->type != 11 || icmp->code != 0) return;
-    auto *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(struct icmphdr));
-    RANGE_CHECK(ip_inner, sizeof(struct iphdr));
-    if (ip_inner->protocol != IPPROTO_UDP) return;
-    auto *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + ((uint16_t) ip_inner->ihl << 2u));
-    RANGE_CHECK(udp_inner, sizeof(struct udphdr));
-    auto it = nat_port_fd.find(udp_inner->source);
-    if (it == nat_port_fd.end()) return;
-    nat_item_t *nat_item = dst_nat_map[(*it).second];
-
-    ip->check = update_check32(ip->check, ip->daddr, nat_item->src.sin_addr.s_addr);
-    ip->daddr = nat_item->src.sin_addr.s_addr;
-    ip_inner->check = update_check32(ip_inner->check, ip_inner->saddr, nat_item->src.sin_addr.s_addr);
-    ip_inner->saddr = nat_item->src.sin_addr.s_addr;
-    udp_inner->check = update_check16(udp_inner->check, udp_inner->source, nat_item->src.sin_port);
-    udp_inner->source = nat_item->src.sin_port;
-
-    FUCK(sendto(fd, data, data_len, 0, (struct sockaddr *) &nat_item->src,
-                sizeof(struct sockaddr_in)) < 0);
+    LOG(LOG_DEBUG, "live = %lu", src_nat_map.size());
 }
 
 void write_pid(char *pid_file) {
@@ -402,7 +435,7 @@ void setup_tproxy() {
     FUCK((fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
     int opt = 1;
     FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)) < 0);
-    FUCK(setsockopt(fd, IPPROTO_IP, IP_TOS, &opt, sizeof(opt)) < 0);
+    FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, SOL_IP, IP_RECVORIGDSTADDR, &opt, sizeof(opt)) < 0);
     struct sockaddr_in serv{};
@@ -413,7 +446,7 @@ void setup_tproxy() {
 
     auto *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
     ep_data->fd = fd;
-    ep_data->cb = (void *) tproxy_recv;
+    ep_data->cb = (void *) perform_src_nat;
     ep_add(ep_fd, ep_data);
 }
 
@@ -437,10 +470,6 @@ void adjust_sched() {
 }
 
 int main(int argc, char *argv[]) {
-    /*
-     * TODO:
-     *   1. TTL, ToS passthrough
-     */
     printf("TPConeNATd by claw6148\n\n");
     if (argc == 1) usage_and_exit();
     try {
@@ -550,7 +579,7 @@ int main(int argc, char *argv[]) {
             while (n--) {
                 try {
                     auto *p = (ep_data_t *) ready_ev[n].data.ptr;
-                    ((void (*)(int)) p->cb)(p->fd);
+                    ep_recv(p->fd, p->cb);
                 } catch (exception const &e) {
                     PERROR(e.what());
                 }

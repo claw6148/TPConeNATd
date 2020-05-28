@@ -76,7 +76,3 @@ iptables -t nat -I POSTROUTING -o ${EXT_IF} -p udp --dport 0:1023 -j SNAT --to $
 
 tpconenatd -p ${TP_PORT} -s ${NAT_IP} -i 4096 -x 65535 -d
 ```
-
-## TODO
-
-- 透传ToS, TTL
