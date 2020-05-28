@@ -8,8 +8,7 @@
 
 #include <cstdio>
 #include <cstring>
-#include <unordered_map>
-#include <unordered_set>
+#include <map>
 #include <set>
 #include <exception>
 #include <sys/socket.h>
@@ -79,29 +78,31 @@ typedef struct {
 } ep_data_t;
 
 typedef struct {
+    uint8_t ttl;
+    uint8_t tos;
+    int fd;
+} nat_inbound_item_t;
+
+typedef struct {
     time_t create_time;
     time_t active_time;
     bool reply;
     uint16_t nat_port;
     uint64_t rx;
     uint64_t tx;
+    uint8_t ttl;
+    uint8_t tos;
     int fd;
     struct sockaddr_in src;
     ep_data_t ep_data;
+    map<pair<uint32_t, uint16_t>, nat_inbound_item_t> *inbound_map;
+    set<pair<uint32_t, uint16_t>> *inbound_filter_set;
 } nat_item_t;
 
-struct pair_hash {
-    template<class T1, class T2>
-    size_t operator()(const pair<T1, T2> &p) const {
-        return hash<T1>{}(p.first) ^ hash<T2>{}(p.first);
-    }
-};
-
-unordered_map<pair<uint32_t, uint16_t>, nat_item_t, pair_hash> src_nat_map;
-unordered_map<int, nat_item_t *> dst_nat_map;
-unordered_map<uint16_t, int> nat_port_fd;
-unordered_map<int, unordered_set<pair<uint32_t, uint16_t>, pair_hash>> restricted_cone_set;
-unordered_map<uint32_t, uint16_t> src_session_counter;
+map<pair<uint32_t, uint16_t>, nat_item_t> src_nat_map;
+map<int, nat_item_t *> fd_nat_map;
+map<uint16_t, nat_item_t *> dst_nat_map;
+map<uint32_t, uint32_t> src_session_counter;
 
 uint16_t tproxy_port = 0;
 uint16_t min_port = 10240;
@@ -152,7 +153,7 @@ void icmp_recv(int fd,
     UNUSED(dst);
     UNUSED(ttl);
     UNUSED(tos);
-#define RANGE_CHECK(x, y) FUCK((uint8_t *) x - (uint8_t *)data + y > data_len)
+#define RANGE_CHECK(x, y) FUCK((uint8_t *) (x) - (uint8_t *)data + (y) > data_len)
     auto *ip = (struct iphdr *) data;
     RANGE_CHECK(ip, (ip->ihl << 2u));
     auto *icmp = (struct icmphdr *) ((uint8_t *) ip + ((uint16_t) ip->ihl << 2u));
@@ -163,9 +164,9 @@ void icmp_recv(int fd,
     if (ip_inner->protocol != IPPROTO_UDP) return;
     auto *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + ((uint16_t) ip_inner->ihl << 2u));
     RANGE_CHECK(udp_inner, sizeof(struct udphdr));
-    auto it = nat_port_fd.find(udp_inner->source);
-    if (it == nat_port_fd.end()) return;
-    nat_item_t *nat_item = dst_nat_map[(*it).second];
+    auto it = dst_nat_map.find(udp_inner->source);
+    if (it == dst_nat_map.end()) return;
+    nat_item_t *nat_item = (*it).second;
 
     ip->check = update_check32(ip->check, ip->daddr, nat_item->src.sin_addr.s_addr);
     ip->daddr = nat_item->src.sin_addr.s_addr;
@@ -204,26 +205,46 @@ void perform_dst_nat(int fd,
                      ssize_t data_len
 ) {
     UNUSED(dst);
-    nat_item_t *nat_item = dst_nat_map[fd];
-    if (nat_type > 1 &&
-        restricted_cone_set[fd].find(make_pair(src->sin_addr.s_addr, nat_type > 2 ? src->sin_port : 0)) ==
-        restricted_cone_set[fd].end()) {
-        return;
+    nat_item_t *nat_item = fd_nat_map[fd];
+    if (nat_type > 1) {
+        if (nat_item->inbound_filter_set->find(make_pair(src->sin_addr.s_addr, nat_type == 3 ? src->sin_port : 0)) ==
+            nat_item->inbound_filter_set->end()) {
+            return;
+        }
     }
+
+    auto tp = make_pair(src->sin_addr.s_addr, src->sin_port);
+    auto it = nat_item->inbound_map->find(tp);
+    nat_inbound_item_t *inbound_item;
+    if (it == nat_item->inbound_map->end()) {
+        inbound_item = &(*nat_item->inbound_map)[tp];
+    } else {
+        inbound_item = &(*it).second;
+    }
+    if (inbound_item->fd == 0) {
+        int inbound_fd;
+        FUCK((inbound_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
+        int opt = 1;
+        FUCK(setsockopt(inbound_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
+        FUCK(setsockopt(inbound_fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
+        FUCK(bind(inbound_fd, (struct sockaddr *) src, sizeof(struct sockaddr_in)) < 0);
+        inbound_item->fd = inbound_fd;
+    }
+
     nat_item->reply = true;
     if (!no_inbound_refresh) nat_item->active_time = time(nullptr);
 
-    int tmp_fd = 0;
-    FUCK((tmp_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
-    int opt = 1;
-    FUCK(setsockopt(tmp_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
-    FUCK(setsockopt(tmp_fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
-    FUCK(setsockopt(tmp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
-    FUCK(setsockopt(tmp_fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
-    FUCK(bind(tmp_fd, (struct sockaddr *) src, sizeof(struct sockaddr_in)) < 0);
-    FUCK(sendto(tmp_fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) < 0);
+    if (inbound_item->ttl != ttl) {
+        FUCK(setsockopt(inbound_item->fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
+        inbound_item->ttl = ttl;
+    }
+    if (inbound_item->tos != tos) {
+        FUCK(setsockopt(inbound_item->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
+        inbound_item->tos = tos;
+    }
+    FUCK(sendto(inbound_item->fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) <
+         0);
     nat_item->rx += data_len;
-    close(tmp_fd);
 }
 
 void perform_src_nat(int fd,
@@ -287,8 +308,11 @@ void perform_src_nat(int fd,
         );
 
         memcpy(&nat_item->src, src, sizeof(struct sockaddr_in));
-        dst_nat_map[nat_item->fd] = nat_item;
-        nat_port_fd[nat_item->nat_port] = nat_item->fd;
+        dst_nat_map[nat_item->nat_port] = nat_item;
+        fd_nat_map[nat_item->fd] = nat_item;
+
+        nat_item->inbound_map = new map<pair<uint32_t, uint16_t>, nat_inbound_item_t>;
+        if (nat_type > 1) nat_item->inbound_filter_set = new set<pair<uint32_t, uint16_t>>;
 
         nat_item->ep_data.fd = nat_item->fd;
         nat_item->ep_data.cb = (void *) perform_dst_nat;
@@ -301,10 +325,16 @@ void perform_src_nat(int fd,
         nat_item->active_time = time(nullptr);
     }
     if (nat_type > 1) {
-        restricted_cone_set[nat_item->fd].insert(make_pair(dst->sin_addr.s_addr, nat_type > 2 ? dst->sin_port : 0));
+        nat_item->inbound_filter_set->insert(make_pair(dst->sin_addr.s_addr, nat_type == 3 ? dst->sin_port : 0));
     }
-    FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
-    FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
+    if (nat_item->ttl != ttl) {
+        FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
+        nat_item->ttl = ttl;
+    }
+    if (nat_item->tos != tos) {
+        FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
+        nat_item->tos = tos;
+    }
     FUCK(sendto(nat_item->fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0);
     nat_item->tx += data_len;
 }
@@ -333,6 +363,7 @@ void ep_recv(int fd, void *cb) {
 
     uint16_t ttl = 0xFF;
     uint16_t tos = 0x00;
+
     for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
         if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGADDRS) {
             memcpy(&dst, CMSG_DATA(cmsg), sizeof(struct sockaddr_in));
@@ -385,10 +416,12 @@ void clean_expired(time_t now) {
             }
             src_session_counter[nat_item->src.sin_addr.s_addr]--;
             ep_del(ep_fd, nat_item->fd);
-            nat_port_fd.erase(nat_item->nat_port);
             close(nat_item->fd);
-            restricted_cone_set.erase(nat_item->fd);
-            dst_nat_map.erase(nat_item->fd);
+            dst_nat_map.erase(nat_item->nat_port);
+            fd_nat_map.erase(nat_item->fd);
+            for (auto &x:*nat_item->inbound_map) close(x.second.fd);
+            delete nat_item->inbound_map;
+            if (nat_type > 1) delete nat_item->inbound_filter_set;
             it = src_nat_map.erase(it);
             continue;
         }
@@ -415,17 +448,17 @@ void usage_and_exit() {
     printf("Usage:\n");
     printf("  -h Help\n");
     printf("  -p TPROXY port\n");
-    printf("  -i Minimum port (default: 10240)\n");
-    printf("  -x Maximum port (default: 65535)\n");
+    printf("  -i Minimum port (default: %d)\n", min_port);
+    printf("  -x Maximum port (default: %d)\n", max_port);
     printf("  -s NAT ip (default: 0.0.0.0, depends on system)\n");
-    printf("  -n NEW(no reply) timeout (default: 30)\n");
-    printf("  -e ESTABLISHED timeout (default: 300)\n");
-    printf("  -o Session limit per source ip (default: 65535, unlimited)\n");
-    printf("  -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: 1)\n");
-    printf("  -c Clean interval (default: 10)\n");
+    printf("  -n NEW(no reply) timeout (default: %d)\n", new_timeout);
+    printf("  -e ESTABLISHED timeout (default: %d)\n", est_timeout);
+    printf("  -o Session limit per source ip (default: %d)\n", session_per_src);
+    printf("  -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: %d)\n", nat_type);
+    printf("  -c Clean interval (default: %d)\n", clean_interval);
     printf("  -b No inbound refresh\n");
     printf("  -f PID file\n");
-    printf("  -l Log level (default: 6. INFO)\n");
+    printf("  -l Log level (default: %d)\n", log_level);
     printf("  -d Run as daemon, log to syslog\n");
     exit(0);
 }
