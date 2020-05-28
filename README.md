@@ -76,3 +76,15 @@ iptables -t nat -I POSTROUTING -o ${EXT_IF} -p udp --dport 0:1023 -j SNAT --to $
 
 tpconenatd -p ${TP_PORT} -s ${NAT_IP} -i 4096 -x 65535 -d
 ```
+
+## 性能测试
+
+Xeon E5-2670 / Debian 9
+
+载荷长度 | SNAT Mbps | SNAT Kpps | SNAT 丢包率 | DNAT Mbps | DNAT Kpps | DNAT 丢包率
+-|-|-|-|-|-|-
+12 | 11.6 | 121.00 | 0.85% | 12.3 | 128.31 | 0.55%
+730 | 677 | 115.86 | 0.50% | 525 | 89.90 | 0.93%
+1472 | 1410 | 119.57 | 0.84% | 1040 | 88.78 | 0.33%
+
+*丢包率1%以内，非全速*
