@@ -119,7 +119,7 @@ int ep_fd;
 
 void ep_add(int _ep_fd, ep_data_t *ep_data) {
     struct epoll_event ep_ev{};
-    ep_ev.events = EPOLLIN;
+    ep_ev.events = EPOLLIN | EPOLLET;
     ep_ev.data.ptr = ep_data;
     FUCK(epoll_ctl(_ep_fd, EPOLL_CTL_ADD, ep_data->fd, &ep_ev) < 0);
 }
@@ -138,6 +138,12 @@ uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_val) {
     check = update_check16(check, old_val >> 16u, new_val >> 16u);
     check = update_check16(check, old_val & 0xffffu, new_val & 0xffffu);
     return check;
+}
+
+void set_nonblock(int fd) {
+    int fl;
+    FUCK((fl = fcntl(fd, F_GETFL)) < 0);
+    FUCK(fcntl(fd, F_SETFL, (uint32_t) fl | (uint32_t) O_NONBLOCK) < 0);
 }
 
 void icmp_recv(int fd,
@@ -178,7 +184,7 @@ void icmp_recv(int fd,
     udp_inner->source = nat_item->src.sin_port;
 
     FUCK(sendto(fd, data, data_len, 0, (struct sockaddr *) &nat_item->src,
-                sizeof(struct sockaddr_in)) < 0);
+                sizeof(struct sockaddr_in)) < 0 && errno != EAGAIN);
 }
 
 int bind_port(uint16_t port_net) {
@@ -191,6 +197,7 @@ int bind_port(uint16_t port_net) {
     int opt = 1;
     FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)) < 0);
+    set_nonblock(fd);
     if (bind(fd, (const sockaddr *) &serv, sizeof(serv)) < 0) {
         close(fd);
         fd = 0;
@@ -240,7 +247,7 @@ void perform_dst_nat(int fd,
         inbound_item->tos = tos;
     }
     FUCK(sendto(inbound_item->fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) <
-         0);
+         0 && errno != EAGAIN);
     nat_item->rx += data_len;
 }
 
@@ -330,11 +337,12 @@ void perform_src_nat(int fd,
         FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
         nat_item->tos = tos;
     }
-    FUCK(sendto(nat_item->fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0);
+    FUCK(sendto(nat_item->fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0 &&
+         errno != EAGAIN);
     nat_item->tx += data_len;
 }
 
-void ep_recv(int fd, void *cb, void *param) {
+bool ep_recv(int fd, void *cb, void *param) {
     struct sockaddr_in src{}, dst{};
 
     static uint8_t data[0x10000];
@@ -353,8 +361,9 @@ void ep_recv(int fd, void *cb, void *param) {
             .msg_controllen = sizeof(ctl),
     };
 
-    ssize_t data_len;
-    FUCK((data_len = recvmsg(fd, &msg, 0)) < 0);
+    ssize_t data_len = recvmsg(fd, &msg, 0);
+    if (data_len < 0 && errno == EAGAIN) return false;
+    FUCK(data_len < 0);
 
     uint16_t ttl = 0xFF;
     uint16_t tos = 0x00;
@@ -388,6 +397,7 @@ void ep_recv(int fd, void *cb, void *param) {
            data_len,
            param
     );
+    return true;
 }
 
 void clean_expired(time_t now) {
@@ -467,6 +477,7 @@ void setup_tproxy() {
     FUCK(setsockopt(fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
     FUCK(setsockopt(fd, SOL_IP, IP_RECVORIGDSTADDR, &opt, sizeof(opt)) < 0);
+    set_nonblock(fd);
     struct sockaddr_in serv{};
     serv.sin_family = AF_INET;
     serv.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -484,6 +495,7 @@ void setup_icmp() {
     FUCK((fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)) < 0);
     int opt = 1;
     FUCK(setsockopt(fd, IPPROTO_IP, IP_HDRINCL, &opt, sizeof(opt)) < 0);
+    set_nonblock(fd);
     auto *ep_data = (ep_data_t *) malloc(sizeof(ep_data_t));
     ep_data->fd = fd;
     ep_data->cb = (void *) icmp_recv;
@@ -491,6 +503,7 @@ void setup_icmp() {
 }
 
 void bye(int) {
+    exit(0);
 }
 
 void adjust_sched() {
@@ -606,10 +619,13 @@ int main(int argc, char *argv[]) {
                                (int) clean_interval * 1000);
             FUCK(n < 0);
             while (n--) {
+                auto *p = (ep_data_t *) ready_ev[n].data.ptr;
                 try {
-                    auto *p = (ep_data_t *) ready_ev[n].data.ptr;
-                    ep_recv(p->fd, p->cb, p->param);
+                    while (ep_recv(p->fd, p->cb, p->param));
                 } catch (exception const &e) {
+                    static uint8_t junk[0x10000];
+                    socklen_t sock_len = sizeof(struct sockaddr);
+                    while (recvfrom(p->fd, junk, sizeof(junk), 0, (struct sockaddr *) junk, &sock_len) > 0);
                     PERROR(e.what());
                 }
             }
