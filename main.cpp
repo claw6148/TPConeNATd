@@ -75,6 +75,7 @@ char log_level_str[][8] = {
 typedef struct {
     int fd;
     void *cb;
+    void *param;
 } ep_data_t;
 
 typedef struct {
@@ -100,7 +101,6 @@ typedef struct {
 } nat_item_t;
 
 map<pair<uint32_t, uint16_t>, nat_item_t> src_nat_map;
-map<int, nat_item_t *> fd_nat_map;
 map<uint16_t, nat_item_t *> dst_nat_map;
 map<uint32_t, uint32_t> src_session_counter;
 
@@ -128,13 +128,13 @@ void ep_del(int _ep_fd, int fd) {
     FUCK(epoll_ctl(_ep_fd, EPOLL_CTL_DEL, fd, nullptr) < 0);
 }
 
-static uint16_t update_check16(uint16_t check, uint16_t old_val, uint16_t new_val) {
+uint16_t update_check16(uint16_t check, uint16_t old_val, uint16_t new_val) {
     uint32_t x = ((uint16_t) ~check & 0xffffu) + ((uint16_t) ~old_val & 0xffffu) + new_val;
     x = (x >> 16u) + (x & 0xffffu);
     return ~(x + (x >> 16u));
 }
 
-static uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_val) {
+uint16_t update_check32(uint16_t check, uint32_t old_val, uint32_t new_val) {
     check = update_check16(check, old_val >> 16u, new_val >> 16u);
     check = update_check16(check, old_val & 0xffffu, new_val & 0xffffu);
     return check;
@@ -146,13 +146,15 @@ void icmp_recv(int fd,
                uint8_t ttl,
                uint8_t tos,
                void *data,
-               ssize_t data_len
+               ssize_t data_len,
+               void *param
 ) {
     UNUSED(fd);
     UNUSED(src);
     UNUSED(dst);
     UNUSED(ttl);
     UNUSED(tos);
+    UNUSED(param);
 #define RANGE_CHECK(x, y) FUCK((uint8_t *) (x) - (uint8_t *)data + (y) > data_len)
     auto *ip = (struct iphdr *) data;
     RANGE_CHECK(ip, (ip->ihl << 2u));
@@ -179,7 +181,7 @@ void icmp_recv(int fd,
                 sizeof(struct sockaddr_in)) < 0);
 }
 
-static int bind_port(uint16_t port_net) {
+int bind_port(uint16_t port_net) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return 0;
     struct sockaddr_in serv{};
@@ -202,10 +204,12 @@ void perform_dst_nat(int fd,
                      uint8_t ttl,
                      uint8_t tos,
                      void *data,
-                     ssize_t data_len
+                     ssize_t data_len,
+                     void *param
 ) {
+    UNUSED(fd);
     UNUSED(dst);
-    nat_item_t *nat_item = fd_nat_map[fd];
+    auto *nat_item = (nat_item_t *) param;
     if (nat_type > 1) {
         if (nat_item->inbound_filter_set->find(make_pair(src->sin_addr.s_addr, nat_type == 3 ? src->sin_port : 0)) ==
             nat_item->inbound_filter_set->end()) {
@@ -213,14 +217,7 @@ void perform_dst_nat(int fd,
         }
     }
 
-    auto tp = make_pair(src->sin_addr.s_addr, src->sin_port);
-    auto it = nat_item->inbound_map->find(tp);
-    nat_inbound_item_t *inbound_item;
-    if (it == nat_item->inbound_map->end()) {
-        inbound_item = &(*nat_item->inbound_map)[tp];
-    } else {
-        inbound_item = &(*it).second;
-    }
+    nat_inbound_item_t *inbound_item = &(*nat_item->inbound_map)[make_pair(src->sin_addr.s_addr, src->sin_port)];
     if (inbound_item->fd == 0) {
         int inbound_fd;
         FUCK((inbound_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
@@ -253,9 +250,11 @@ void perform_src_nat(int fd,
                      uint8_t ttl,
                      uint8_t tos,
                      void *data,
-                     ssize_t data_len
+                     ssize_t data_len,
+                     void *param
 ) {
     UNUSED(fd);
+    UNUSED(param);
     uint32_t src_addr_host = ntohl(src->sin_addr.s_addr);
     uint32_t dst_addr_host = ntohl(dst->sin_addr.s_addr);
     if ((src_addr_host == 0 || dst_addr_host == 0) ||
@@ -264,15 +263,13 @@ void perform_src_nat(int fd,
         return;
     }
     auto key = make_pair(src->sin_addr.s_addr, src->sin_port);
-    nat_item_t *nat_item;
-    auto it = src_nat_map.find(key);
-    if (it == src_nat_map.end()) {
-        nat_item = &src_nat_map[key];
-        memset(nat_item, 0, sizeof(nat_item_t));
+    nat_item_t *nat_item = &src_nat_map[key];
+    if (nat_item->create_time == 0) {
         if (src_session_counter[src->sin_addr.s_addr] + 1 > session_per_src) {
             char src_ip_str[0x20];
             inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
             LOG(LOG_ERR, "%s session limit reached!", src_ip_str);
+            src_nat_map.erase(key);
             return;
         }
 
@@ -309,21 +306,19 @@ void perform_src_nat(int fd,
 
         memcpy(&nat_item->src, src, sizeof(struct sockaddr_in));
         dst_nat_map[nat_item->nat_port] = nat_item;
-        fd_nat_map[nat_item->fd] = nat_item;
 
         nat_item->inbound_map = new map<pair<uint32_t, uint16_t>, nat_inbound_item_t>;
         if (nat_type > 1) nat_item->inbound_filter_set = new set<pair<uint32_t, uint16_t>>;
 
         nat_item->ep_data.fd = nat_item->fd;
         nat_item->ep_data.cb = (void *) perform_dst_nat;
+        nat_item->ep_data.param = (void *) nat_item;
         ep_add(ep_fd, &nat_item->ep_data);
 
         nat_item->active_time = time(nullptr);
         nat_item->create_time = nat_item->active_time;
-    } else {
-        nat_item = &(*it).second;
-        nat_item->active_time = time(nullptr);
     }
+    nat_item->active_time = time(nullptr);
     if (nat_type > 1) {
         nat_item->inbound_filter_set->insert(make_pair(dst->sin_addr.s_addr, nat_type == 3 ? dst->sin_port : 0));
     }
@@ -339,7 +334,7 @@ void perform_src_nat(int fd,
     nat_item->tx += data_len;
 }
 
-void ep_recv(int fd, void *cb) {
+void ep_recv(int fd, void *cb, void *param) {
     struct sockaddr_in src{}, dst{};
 
     static uint8_t data[0x10000];
@@ -382,14 +377,16 @@ void ep_recv(int fd, void *cb) {
                uint8_t,
                uint8_t,
                void *,
-               ssize_t
+               ssize_t,
+               void *
     )) cb)(fd,
            &src,
            &dst,
            ttl,
            tos,
            data,
-           data_len
+           data_len,
+           param
     );
 }
 
@@ -418,7 +415,6 @@ void clean_expired(time_t now) {
             ep_del(ep_fd, nat_item->fd);
             close(nat_item->fd);
             dst_nat_map.erase(nat_item->nat_port);
-            fd_nat_map.erase(nat_item->fd);
             for (auto &x:*nat_item->inbound_map) close(x.second.fd);
             delete nat_item->inbound_map;
             if (nat_type > 1) delete nat_item->inbound_filter_set;
@@ -612,7 +608,7 @@ int main(int argc, char *argv[]) {
             while (n--) {
                 try {
                     auto *p = (ep_data_t *) ready_ev[n].data.ptr;
-                    ep_recv(p->fd, p->cb);
+                    ep_recv(p->fd, p->cb, p->param);
                 } catch (exception const &e) {
                     PERROR(e.what());
                 }
