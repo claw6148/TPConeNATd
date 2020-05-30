@@ -23,6 +23,7 @@
 #include <syslog.h>
 #include <csignal>
 #include <cinttypes>
+#include <sys/timerfd.h>
 
 using namespace std;
 
@@ -62,7 +63,7 @@ char log_level_str[][8] = {
         fprintf(level <= LOG_ERR ? stderr : stdout, "[%s] " fmt"\n", log_level_str[level], ##__VA_ARGS__); \
 } while(0)
 
-#define PERROR(msg) LOG(LOG_CRIT, "line = %s, err = %s", msg, strerror(errno))
+#define PERROR(msg) LOG(LOG_CRIT, "line = %s, err = %d (%s)", msg, errno, strerror(errno))
 
 #define PRINT_DEC(x) LOG(LOG_INFO, #x" = %d", x)
 #define PRINT_IP(x) do { \
@@ -76,32 +77,37 @@ typedef struct {
     int fd;
     void *cb;
     void *param;
+    bool is_timer;
 } ep_data_t;
 
 typedef struct {
-    uint8_t ttl;
-    uint8_t tos;
-    int fd;
-} nat_inbound_item_t;
+    uint8_t ttl = 0;
+    uint8_t tos = 0;
+    int socket_fd = 0;
+    time_t timer_last_set_time = 0;
+    ep_data_t timer_ep_data{};
+    void *nat = nullptr;
+    pair<uint32_t, uint16_t> key;
+} nat_inbound_t;
 
 typedef struct {
-    time_t create_time;
-    time_t active_time;
-    bool reply;
-    uint16_t nat_port;
-    uint64_t rx;
-    uint64_t tx;
-    uint8_t ttl;
-    uint8_t tos;
-    int fd;
-    struct sockaddr_in src;
-    ep_data_t ep_data;
-    map<pair<uint32_t, uint16_t>, nat_inbound_item_t> *inbound_map;
-    set<pair<uint32_t, uint16_t>> *inbound_filter_set;
-} nat_item_t;
+    time_t create_time = 0;
+    bool reply = false;
+    uint16_t nat_port = 0;
+    uint64_t rx = 0;
+    uint64_t tx = 0;
+    uint8_t ttl = 0;
+    uint8_t tos = 0;
+    ep_data_t socket_ep_data{};
+    time_t timer_last_set_time{};
+    ep_data_t timer_ep_data{};
+    struct sockaddr_in src{};
+    map<pair<uint32_t, uint16_t>, nat_inbound_t> inbound_map;
+    set<pair<uint32_t, uint16_t>> inbound_filter_set;
+} nat_t;
 
-map<pair<uint32_t, uint16_t>, nat_item_t> src_nat_map;
-map<uint16_t, nat_item_t *> dst_nat_map;
+map<pair<uint32_t, uint16_t>, nat_t> src_nat_map;
+map<uint16_t, nat_t *> dst_nat_map;
 map<uint32_t, uint32_t> src_session_counter;
 
 uint16_t tproxy_port = 0;
@@ -110,10 +116,8 @@ uint16_t max_port = 65535;
 uint32_t nat_ip = 0;
 uint32_t new_timeout = 30;
 uint32_t est_timeout = 300;
-uint32_t clean_interval = 10;
 uint16_t session_per_src = 65535;
 uint8_t nat_type = 1;
-bool no_inbound_refresh = false;
 
 int ep_fd;
 
@@ -174,17 +178,73 @@ void icmp_recv(int fd,
     RANGE_CHECK(udp_inner, sizeof(struct udphdr));
     auto it = dst_nat_map.find(udp_inner->source);
     if (it == dst_nat_map.end()) return;
-    nat_item_t *nat_item = (*it).second;
+    nat_t *nat = (*it).second;
 
-    ip->check = update_check32(ip->check, ip->daddr, nat_item->src.sin_addr.s_addr);
-    ip->daddr = nat_item->src.sin_addr.s_addr;
-    ip_inner->check = update_check32(ip_inner->check, ip_inner->saddr, nat_item->src.sin_addr.s_addr);
-    ip_inner->saddr = nat_item->src.sin_addr.s_addr;
-    udp_inner->check = update_check16(udp_inner->check, udp_inner->source, nat_item->src.sin_port);
-    udp_inner->source = nat_item->src.sin_port;
+    ip->check = update_check32(ip->check, ip->daddr, nat->src.sin_addr.s_addr);
+    ip->daddr = nat->src.sin_addr.s_addr;
+    ip_inner->check = update_check32(ip_inner->check, ip_inner->saddr, nat->src.sin_addr.s_addr);
+    ip_inner->saddr = nat->src.sin_addr.s_addr;
+    udp_inner->check = update_check16(udp_inner->check, udp_inner->source, nat->src.sin_port);
+    udp_inner->source = nat->src.sin_port;
 
-    FUCK(sendto(fd, data, data_len, 0, (struct sockaddr *) &nat_item->src,
-                sizeof(struct sockaddr_in)) < 0 && errno != EAGAIN);
+    FUCK((sendto(fd, data, data_len, 0, (struct sockaddr *) &nat->src, sizeof(struct sockaddr_in))) < 0 &&
+         errno != EAGAIN);
+}
+
+void icmp_reply_ttl_exceed(int fd,
+                           struct sockaddr_in *src,
+                           struct sockaddr_in *dst,
+                           uint8_t ttl,
+                           uint8_t tos,
+                           void *data,
+                           ssize_t data_len,
+                           void *param
+) {
+    UNUSED(data);
+    UNUSED(data_len);
+    UNUSED(param);
+    static uint8_t buffer[sizeof(struct icmphdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + 8]{};
+    int tmp_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    set_nonblock(fd);
+    int opt = 1;
+    FUCK(setsockopt(tmp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
+
+    auto *icmp = (struct icmphdr *) buffer;
+    icmp->type = 11;
+    icmp->code = 0;
+    icmp->checksum = htons(0xa149);
+    icmp->checksum = update_check32(icmp->checksum, 0, src->sin_addr.s_addr);
+    icmp->checksum = update_check32(icmp->checksum, 0, dst->sin_addr.s_addr);
+
+    auto *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(struct icmphdr));
+    ip_inner->saddr = src->sin_addr.s_addr;
+    ip_inner->daddr = dst->sin_addr.s_addr;
+    ip_inner->version = 4;
+    ip_inner->ihl = sizeof(struct iphdr) >> 2u;
+    ip_inner->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr));
+    ip_inner->ttl = ++ttl;
+    ip_inner->tos = tos;
+    ip_inner->protocol = IPPROTO_UDP;
+    ip_inner->check = htons(0xb9d2);
+    ip_inner->check = update_check32(ip_inner->check, 0, src->sin_addr.s_addr);
+    ip_inner->check = update_check32(ip_inner->check, 0, dst->sin_addr.s_addr);
+    icmp->checksum = update_check16(icmp->checksum, htons(0xb9d2), ip_inner->check);
+
+    auto *udp_inner = (struct udphdr *) ((uint8_t *) ip_inner + ((uint16_t) ip_inner->ihl << 2u));
+    udp_inner->len = htons(8);
+    udp_inner->check = htons(0x53ae);
+    udp_inner->source = src->sin_port;
+    udp_inner->dest = dst->sin_port;
+    udp_inner->check = update_check16(udp_inner->check, 0, src->sin_port);
+    udp_inner->check = update_check16(udp_inner->check, 0, dst->sin_port);
+    icmp->checksum = update_check16(icmp->checksum, 0, src->sin_port);
+    icmp->checksum = update_check16(icmp->checksum, 0, dst->sin_port);
+    icmp->checksum = update_check16(icmp->checksum, htons(0x53ae), udp_inner->check);
+
+    ssize_t send_len = sendto(tmp_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) src,
+                              sizeof(struct sockaddr_in));
+    close(tmp_fd);
+    FUCK(send_len < 0 && errno != EAGAIN);
 }
 
 int bind_port(uint16_t port_net) {
@@ -205,6 +265,57 @@ int bind_port(uint16_t port_net) {
     return fd;
 }
 
+void set_timeout(int fd, time_t sec, time_t *last_set_time) {
+    time_t now = time(nullptr);
+    if (now == *last_set_time) return;
+    struct itimerspec timer{};
+    timer.it_interval.tv_sec = 0;
+    timer.it_value.tv_sec = sec;
+    timerfd_settime(fd, 0, &timer, nullptr);
+    *last_set_time = now;
+}
+
+void close_inbound_socket(int fd, void *param) {
+    auto *inbound = (nat_inbound_t *) param;
+    if (inbound->socket_fd == 0) return;
+    close(inbound->socket_fd);
+    inbound->socket_fd = 0;
+    ep_del(ep_fd, inbound->timer_ep_data.fd);
+    close(inbound->timer_ep_data.fd);
+
+    if (fd != -1) {
+        auto *nat = (nat_t *) inbound->nat;
+        nat->inbound_map.erase(inbound->key);
+    }
+}
+
+void delete_nat(int fd, void *param) {
+    auto *nat = (nat_t *) param;
+    src_session_counter[nat->src.sin_addr.s_addr]--;
+    ep_del(ep_fd, nat->socket_ep_data.fd);
+    close(nat->socket_ep_data.fd);
+    dst_nat_map.erase(nat->nat_port);
+    for (auto &it : nat->inbound_map) {
+        close_inbound_socket(-1, &it.second);
+    }
+    ep_del(ep_fd, fd);
+    close(fd);
+
+    char src_ip_str[0x20];
+    inet_ntop(AF_INET, &nat->src.sin_addr, src_ip_str, sizeof(src_ip_str));
+    char nat_ip_str[0x20];
+    inet_ntop(AF_INET, &nat_ip, nat_ip_str, sizeof(nat_ip_str));
+    LOG(LOG_INFO, "del, src = %s:%d, nat = %s:%d, duration = %lu, tx = %"
+            PRIu64
+            ", rx = %"
+            PRIu64,
+        src_ip_str, ntohs(nat->src.sin_port),
+        nat_ip_str, ntohs(nat->nat_port),
+        time(nullptr) - nat->create_time,
+        nat->tx, nat->rx
+    );
+}
+
 void perform_dst_nat(int fd,
                      struct sockaddr_in *src,
                      struct sockaddr_in *dst,
@@ -216,39 +327,50 @@ void perform_dst_nat(int fd,
 ) {
     UNUSED(fd);
     UNUSED(dst);
-    auto *nat_item = (nat_item_t *) param;
+    auto *nat = (nat_t *) param;
     if (nat_type > 1) {
-        if (nat_item->inbound_filter_set->find(make_pair(src->sin_addr.s_addr, nat_type == 3 ? src->sin_port : 0)) ==
-            nat_item->inbound_filter_set->end()) {
+        if (nat->inbound_filter_set.find(make_pair(src->sin_addr.s_addr, nat_type == 3 ? src->sin_port : 0)) ==
+            nat->inbound_filter_set.end()) {
             return;
         }
     }
 
-    nat_inbound_item_t *inbound_item = &(*nat_item->inbound_map)[make_pair(src->sin_addr.s_addr, src->sin_port)];
-    if (inbound_item->fd == 0) {
+    auto key = make_pair(src->sin_addr.s_addr, src->sin_port);
+    nat_inbound_t *inbound = &nat->inbound_map[key];
+    if (inbound->socket_fd == 0) {
         int inbound_fd;
         FUCK((inbound_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0);
         int opt = 1;
         FUCK(setsockopt(inbound_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0);
         FUCK(setsockopt(inbound_fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)) < 0);
         FUCK(bind(inbound_fd, (struct sockaddr *) src, sizeof(struct sockaddr_in)) < 0);
-        inbound_item->fd = inbound_fd;
+        inbound->socket_fd = inbound_fd;
+
+        inbound->nat = (void *) nat;
+        inbound->key = key;
+        inbound->timer_ep_data.fd = timerfd_create(CLOCK_MONOTONIC, 0);
+        inbound->timer_ep_data.is_timer = true;
+        FUCK(inbound->timer_ep_data.fd < 0);
+        inbound->timer_ep_data.cb = (void *) close_inbound_socket;
+        inbound->timer_ep_data.param = (void *) inbound;
+        ep_add(ep_fd, &inbound->timer_ep_data);
     }
 
-    nat_item->reply = true;
-    if (!no_inbound_refresh) nat_item->active_time = time(nullptr);
+    nat->reply = true;
+    set_timeout(nat->timer_ep_data.fd, est_timeout, &nat->timer_last_set_time);
+    set_timeout(inbound->timer_ep_data.fd, est_timeout, &inbound->timer_last_set_time);
 
-    if (inbound_item->ttl != ttl) {
-        FUCK(setsockopt(inbound_item->fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
-        inbound_item->ttl = ttl;
+    if (inbound->ttl != ttl) {
+        FUCK(setsockopt(inbound->socket_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
+        inbound->ttl = ttl;
     }
-    if (inbound_item->tos != tos) {
-        FUCK(setsockopt(inbound_item->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
-        inbound_item->tos = tos;
+    if (inbound->tos != tos) {
+        FUCK(setsockopt(inbound->socket_fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
+        inbound->tos = tos;
     }
-    FUCK(sendto(inbound_item->fd, data, data_len, 0, (struct sockaddr *) &nat_item->src, sizeof(struct sockaddr_in)) <
-         0 && errno != EAGAIN);
-    nat_item->rx += data_len;
+    FUCK((sendto(inbound->socket_fd, data, data_len, 0, (struct sockaddr *) &nat->src,
+                 sizeof(struct sockaddr_in))) < 0 && errno != EAGAIN);
+    nat->rx += data_len;
 }
 
 void perform_src_nat(int fd,
@@ -270,8 +392,8 @@ void perform_src_nat(int fd,
         return;
     }
     auto key = make_pair(src->sin_addr.s_addr, src->sin_port);
-    nat_item_t *nat_item = &src_nat_map[key];
-    if (nat_item->create_time == 0) {
+    nat_t *nat = &src_nat_map[key];
+    if (nat->create_time == 0) {
         if (src_session_counter[src->sin_addr.s_addr] + 1 > session_per_src) {
             char src_ip_str[0x20];
             inet_ntop(AF_INET, &src->sin_addr, src_ip_str, sizeof(src_ip_str));
@@ -290,12 +412,12 @@ void perform_src_nat(int fd,
             nat_port = htons(nat_port);
             int bind_fd = bind_port(nat_port);
             if (bind_fd) {
-                nat_item->fd = bind_fd;
-                nat_item->nat_port = nat_port;
+                nat->socket_ep_data.fd = bind_fd;
+                nat->nat_port = nat_port;
                 break;
             }
         }
-        if (nat_item->fd == 0) {
+        if (nat->socket_ep_data.fd == 0) {
             LOG(LOG_ERR, "No ports available!");
             src_nat_map.erase(key);
             return;
@@ -308,132 +430,108 @@ void perform_src_nat(int fd,
         inet_ntop(AF_INET, &nat_ip, nat_ip_str, sizeof(nat_ip_str));
         LOG(LOG_INFO, "add, src = %s:%d, nat = %s:%d",
             src_ip_str, ntohs(src->sin_port),
-            nat_ip_str, ntohs(nat_item->nat_port)
+            nat_ip_str, ntohs(nat->nat_port)
         );
 
-        memcpy(&nat_item->src, src, sizeof(struct sockaddr_in));
-        dst_nat_map[nat_item->nat_port] = nat_item;
+        memcpy(&nat->src, src, sizeof(struct sockaddr_in));
+        dst_nat_map[nat->nat_port] = nat;
 
-        nat_item->inbound_map = new map<pair<uint32_t, uint16_t>, nat_inbound_item_t>;
-        if (nat_type > 1) nat_item->inbound_filter_set = new set<pair<uint32_t, uint16_t>>;
+        nat->socket_ep_data.cb = (void *) perform_dst_nat;
+        nat->socket_ep_data.param = (void *) nat;
+        ep_add(ep_fd, &nat->socket_ep_data);
 
-        nat_item->ep_data.fd = nat_item->fd;
-        nat_item->ep_data.cb = (void *) perform_dst_nat;
-        nat_item->ep_data.param = (void *) nat_item;
-        ep_add(ep_fd, &nat_item->ep_data);
+        nat->timer_ep_data.fd = timerfd_create(CLOCK_MONOTONIC, 0);
+        FUCK(nat->timer_ep_data.fd < 0);
+        nat->timer_ep_data.is_timer = true;
+        nat->timer_ep_data.cb = (void *) delete_nat;
+        nat->timer_ep_data.param = (void *) nat;
+        ep_add(ep_fd, &nat->timer_ep_data);
 
-        nat_item->active_time = time(nullptr);
-        nat_item->create_time = nat_item->active_time;
+        nat->create_time = time(nullptr);
     }
-    nat_item->active_time = time(nullptr);
+    set_timeout(nat->timer_ep_data.fd, nat->reply ? est_timeout : new_timeout, &nat->timer_last_set_time);
+
     if (nat_type > 1) {
-        nat_item->inbound_filter_set->insert(make_pair(dst->sin_addr.s_addr, nat_type == 3 ? dst->sin_port : 0));
+        nat->inbound_filter_set.insert(make_pair(dst->sin_addr.s_addr, nat_type == 3 ? dst->sin_port : 0));
     }
-    if (nat_item->ttl != ttl) {
-        FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
-        nat_item->ttl = ttl;
+    if (nat->ttl != ttl) {
+        FUCK(setsockopt(nat->socket_ep_data.fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0);
+        nat->ttl = ttl;
     }
-    if (nat_item->tos != tos) {
-        FUCK(setsockopt(nat_item->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
-        nat_item->tos = tos;
+    if (nat->tos != tos) {
+        FUCK(setsockopt(nat->socket_ep_data.fd, IPPROTO_IP, IP_TOS, &tos, sizeof(ttl)) < 0);
+        nat->tos = tos;
     }
-    FUCK(sendto(nat_item->fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0 &&
+    FUCK(sendto(nat->socket_ep_data.fd, data, data_len, 0, (struct sockaddr *) dst, sizeof(struct sockaddr_in)) < 0 &&
          errno != EAGAIN);
-    nat_item->tx += data_len;
+    nat->tx += data_len;
 }
 
-bool ep_recv(int fd, void *cb, void *param) {
-    struct sockaddr_in src{}, dst{};
+bool ep_recv(ep_data_t *ep_data) {
+    if (ep_data->is_timer) {
+        ((void (*)(int,
+                   void *
+        )) ep_data->cb)(ep_data->fd,
+                        ep_data->param);
+        return false;
+    } else {
+        struct sockaddr_in src{}, dst{};
+        static uint8_t data[0x10000];
+        struct iovec iov{
+                .iov_base = data,
+                .iov_len = sizeof(data),
+        };
 
-    static uint8_t data[0x10000];
-    struct iovec iov{
-            .iov_base = data,
-            .iov_len = sizeof(data),
-    };
+        uint8_t ctl[0x100];
+        struct msghdr msg{
+                .msg_name = &src,
+                .msg_namelen = sizeof(src),
+                .msg_iov = &iov,
+                .msg_iovlen = 1,
+                .msg_control = ctl,
+                .msg_controllen = sizeof(ctl),
+        };
 
-    uint8_t ctl[0x100];
-    struct msghdr msg{
-            .msg_name = &src,
-            .msg_namelen = sizeof(src),
-            .msg_iov = &iov,
-            .msg_iovlen = 1,
-            .msg_control = ctl,
-            .msg_controllen = sizeof(ctl),
-    };
+        ssize_t data_len = recvmsg(ep_data->fd, &msg, 0);
+        if (data_len < 0 && errno == EAGAIN) return false;
+        FUCK(data_len < 0);
 
-    ssize_t data_len = recvmsg(fd, &msg, 0);
-    if (data_len < 0 && errno == EAGAIN) return false;
-    FUCK(data_len < 0);
+        uint16_t ttl = 0xFF;
+        uint16_t tos = 0x00;
 
-    uint16_t ttl = 0xFF;
-    uint16_t tos = 0x00;
-
-    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-        if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGADDRS) {
-            memcpy(&dst, CMSG_DATA(cmsg), sizeof(struct sockaddr_in));
-            dst.sin_family = AF_INET;
-        }
-        if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL) {
-            ttl = *CMSG_DATA(cmsg);
-        }
-        if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TOS) {
-            tos = *CMSG_DATA(cmsg);
-        }
-    }
-    ((void (*)(int,
-               struct sockaddr_in *,
-               struct sockaddr_in *,
-               uint8_t,
-               uint8_t,
-               void *,
-               ssize_t,
-               void *
-    )) cb)(fd,
-           &src,
-           &dst,
-           ttl,
-           tos,
-           data,
-           data_len,
-           param
-    );
-    return true;
-}
-
-void clean_expired(time_t now) {
-    for (auto it = src_nat_map.begin(); it != src_nat_map.end();) {
-        nat_item_t *nat_item = &(*it).second;
-        time_t time_lapsed = now - nat_item->active_time;
-        if ((nat_item->reply && time_lapsed >= est_timeout) ||
-            (!nat_item->reply && time_lapsed >= new_timeout)) {
-            {
-                char src_ip_str[0x20];
-                inet_ntop(AF_INET, &nat_item->src.sin_addr, src_ip_str, sizeof(src_ip_str));
-                char nat_ip_str[0x20];
-                inet_ntop(AF_INET, &nat_ip, nat_ip_str, sizeof(nat_ip_str));
-                LOG(LOG_INFO, "del, src = %s:%d, nat = %s:%d, duration = %lu, tx = %"
-                        PRIu64
-                        ", rx = %"
-                        PRIu64,
-                    src_ip_str, ntohs(nat_item->src.sin_port),
-                    nat_ip_str, ntohs(nat_item->nat_port),
-                    nat_item->active_time - nat_item->create_time,
-                    nat_item->tx, nat_item->rx
-                );
+        for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGADDRS) {
+                memcpy(&dst, CMSG_DATA(cmsg), sizeof(struct sockaddr_in));
+                dst.sin_family = AF_INET;
             }
-            src_session_counter[nat_item->src.sin_addr.s_addr]--;
-            ep_del(ep_fd, nat_item->fd);
-            close(nat_item->fd);
-            dst_nat_map.erase(nat_item->nat_port);
-            for (auto &x:*nat_item->inbound_map) close(x.second.fd);
-            delete nat_item->inbound_map;
-            if (nat_type > 1) delete nat_item->inbound_filter_set;
-            it = src_nat_map.erase(it);
-            continue;
+            if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL) {
+                ttl = *CMSG_DATA(cmsg);
+            }
+            if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TOS) {
+                tos = *CMSG_DATA(cmsg);
+            }
         }
-        ++it;
+        void *cb = ep_data->cb;
+        if (!--ttl) cb = (void *) icmp_reply_ttl_exceed;
+        ((void (*)(int,
+                   struct sockaddr_in *,
+                   struct sockaddr_in *,
+                   uint8_t,
+                   uint8_t,
+                   void *,
+                   ssize_t,
+                   void *
+        )) cb)(ep_data->fd,
+               &src,
+               &dst,
+               ttl,
+               tos,
+               data,
+               data_len,
+               ep_data->param
+        );
+        return true;
     }
-    LOG(LOG_DEBUG, "live = %lu", src_nat_map.size());
 }
 
 void write_pid(char *pid_file) {
@@ -461,8 +559,6 @@ void usage_and_exit() {
     printf("  -e ESTABLISHED timeout (default: %d)\n", est_timeout);
     printf("  -o Session limit per source ip (default: %d)\n", session_per_src);
     printf("  -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: %d)\n", nat_type);
-    printf("  -c Clean interval (default: %d)\n", clean_interval);
-    printf("  -b No inbound refresh\n");
     printf("  -f PID file\n");
     printf("  -l Log level (default: %d)\n", log_level);
     printf("  -d Run as daemon, log to syslog\n");
@@ -516,7 +612,7 @@ int main(int argc, char *argv[]) {
     if (argc == 1) usage_and_exit();
     try {
         char pid_file[0x100]{};
-        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:c:bf:l:d")) != -1;) {
+        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:f:l:d")) != -1;) {
             switch (ch) {
                 case 'h':
                     usage_and_exit();
@@ -544,12 +640,6 @@ int main(int argc, char *argv[]) {
                     break;
                 case 't':
                     nat_type = stol(optarg);
-                    break;
-                case 'c':
-                    clean_interval = stol(optarg);
-                    break;
-                case 'b':
-                    no_inbound_refresh = true;
                     break;
                 case 'f':
                     strcpy(pid_file, optarg);
@@ -579,21 +669,14 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        if (clean_interval <= 0) {
-            printf("Invalid clean interval!\n");
-            return 1;
-        }
-
         PRINT_DEC(tproxy_port);
         PRINT_DEC(min_port);
         PRINT_DEC(max_port);
         PRINT_IP(nat_ip);
         PRINT_DEC(new_timeout);
         PRINT_DEC(est_timeout);
-        PRINT_DEC(clean_interval);
         PRINT_DEC(session_per_src);
         PRINT_DEC(nat_type);
-        PRINT_DEC(no_inbound_refresh);
         PRINT_DEC(log_level);
 
         LOG(LOG_INFO, "Started!");
@@ -612,27 +695,22 @@ int main(int argc, char *argv[]) {
         setup_icmp();
         setup_tproxy();
 
-        time_t last_tick = 0;
         for (;;) {
             static struct epoll_event ready_ev[0x10000];
-            int n = epoll_wait(ep_fd, ready_ev, sizeof(ready_ev) / sizeof(struct epoll_event),
-                               (int) clean_interval * 1000);
+            int n = epoll_wait(ep_fd, ready_ev, sizeof(ready_ev) / sizeof(struct epoll_event), -1);
             FUCK(n < 0);
             while (n--) {
                 auto *p = (ep_data_t *) ready_ev[n].data.ptr;
                 try {
-                    while (ep_recv(p->fd, p->cb, p->param));
+                    while (ep_recv(p));
                 } catch (exception const &e) {
-                    static uint8_t junk[0x10000];
-                    socklen_t sock_len = sizeof(struct sockaddr);
-                    while (recvfrom(p->fd, junk, sizeof(junk), 0, (struct sockaddr *) junk, &sock_len) > 0);
+                    if (!p->is_timer) {
+                        static uint8_t junk[0x10000];
+                        socklen_t sock_len = sizeof(struct sockaddr);
+                        while (recvfrom(p->fd, junk, sizeof(junk), 0, (struct sockaddr *) junk, &sock_len) > 0);
+                    }
                     PERROR(e.what());
                 }
-            }
-            time_t now = time(nullptr);
-            if (now - last_tick >= clean_interval) {
-                clean_expired(now);
-                last_tick = now;
             }
         }
     } catch (exception const &e) {
