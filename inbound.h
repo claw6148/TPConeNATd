@@ -20,16 +20,12 @@ private:
     uint8_t tos{};
     watchdog *wd{};
 
-    bool killed = false;
-
     static void wd_cb(void *param);
 
 public:
     inbound(outbound *out, std::pair<uint32_t, uint16_t> ext_tuple);
 
     ~inbound();
-
-    void kill();
 
     void send(dgram_data_t *dgram_data);
 

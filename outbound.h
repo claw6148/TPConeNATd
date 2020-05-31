@@ -22,7 +22,7 @@ private:
     friend class inbound;
 
     nat *n;
-    bool reply = false;
+    uint16_t port;
     uint64_t rx = 0;
     uint64_t tx = 0;
     uint8_t ttl = 0;

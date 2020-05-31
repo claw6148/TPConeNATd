@@ -6,12 +6,14 @@
 #include "outbound.h"
 #include "util.h"
 #include "dgram_read.h"
+#include <string>
+#include <arpa/inet.h>
 
 using namespace std;
 
 outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
     this->n = n;
-
+    this->port = port;
     this->int_tuple = int_tuple;
     this->wd = new watchdog(n->ep, (void *) outbound::wd_cb, this);
 
@@ -27,20 +29,39 @@ outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
     sockaddr_in nat{};
     nat.sin_family = AF_INET;
     nat.sin_addr.s_addr = this->n->config.nat_ip;
-    nat.sin_port = port;
+    nat.sin_port = htons(this->port);
     bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in));
 
     n->ep->add(&this->ep_param);
+
+    {
+        string s;
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first));
+        s += ":";
+        s += to_string(ntohs(int_tuple.second));
+        s += " <-> ";
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
+        s += ":";
+        s += to_string(this->port);
+        printf("out-add %s\n", s.c_str());
+    }
 }
 
 outbound::~outbound() {
-    delete this->wd;
-    for (auto &x:this->inbound_map) {
-        x.second->kill();
-        delete x.second;
-    }
     this->n->outbound_map.erase(this->int_tuple);
     this->n->ep->del(this->ep_param.fd);
+    close(this->ep_param.fd);
+    {
+        string s;
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first));
+        s += ":";
+        s += to_string(ntohs(int_tuple.second));
+        s += " <-> ";
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
+        s += ":";
+        s += to_string(this->port);
+        printf("out-del %s\n", s.c_str());
+    }
 }
 
 void outbound::wd_cb(void *param) {
@@ -79,8 +100,10 @@ bool outbound::dst_nat(ep_param_t *param) {
         in = (*it).second;
     }
     in->send(&dgram_data);
-    _this->reply = true;
-    _this->wd->feed(_this->n->config.est_timeout);
+    if (_this->wd) {
+        delete _this->wd;
+        _this->wd = nullptr;
+    }
     _this->rx += dgram_data.data_len;
     return true;
 }
@@ -110,6 +133,6 @@ void outbound::src_nat(dgram_data_t *dgram_data) {
             (struct sockaddr *) &dgram_data->dst,
             sizeof(struct sockaddr_in)
     );
-    this->wd->feed(this->reply ? this->n->config.est_timeout : this->n->config.new_timeout);
+    if (this->wd) this->wd->feed(this->n->config.new_timeout);
     this->tx += dgram_data->data_len;
 }

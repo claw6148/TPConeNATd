@@ -3,6 +3,7 @@
 //
 
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include "inbound.h"
 
 using namespace std;
@@ -24,17 +25,44 @@ inbound::inbound(outbound *out, pair<uint32_t, uint16_t> ext_tuple) {
     src.sin_port = ext_tuple.second;
     bind(this->fd, (struct sockaddr *) &src, sizeof(struct sockaddr_in));
     this->wd = new watchdog(this->out->n->ep, (void *) inbound::wd_cb, this);
-}
-
-void inbound::kill() {
-    this->killed = true;
+    {
+        string s;
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&ext_tuple.first));
+        s += ":";
+        s += to_string(ntohs(ext_tuple.second));
+        s += " -> ";
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
+        s += ":";
+        s += to_string(this->out->port);
+        s += " -> ";
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
+        s += ":";
+        s += to_string(ntohs(this->out->int_tuple.second));
+        printf("in-add %s\n", s.c_str());
+    }
 }
 
 inbound::~inbound() {
     delete this->wd;
-    if (!this->killed) this->out->inbound_map.erase(this->ext_tuple);
     this->out->inbound_filter_set.erase(this->ext_tuple);
     close(this->fd);
+    this->out->inbound_map.erase(this->ext_tuple);
+    {
+        string s;
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&ext_tuple.first));
+        s += ":";
+        s += to_string(ntohs(ext_tuple.second));
+        s += " -> ";
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
+        s += ":";
+        s += to_string(this->out->port);
+        s += " -> ";
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
+        s += ":";
+        s += to_string(ntohs(this->out->int_tuple.second));
+        printf("in-del %s\n", s.c_str());
+    }
+    if (this->out->inbound_map.empty()) delete this->out;
 }
 
 void inbound::send(dgram_data_t *dgram_data) {

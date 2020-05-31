@@ -17,8 +17,8 @@ typedef struct {
     uint16_t min_port = 10240;
     uint16_t max_port = 65535;
     uint32_t nat_ip = 0;
-    uint32_t new_timeout = 2;
-    uint32_t est_timeout = 5;
+    uint32_t new_timeout = 10;
+    uint32_t est_timeout = 15;
     uint16_t session_per_src = 65535;
     uint8_t nat_type = 1;
 }nat_config_t;
