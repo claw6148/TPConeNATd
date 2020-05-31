@@ -13,12 +13,12 @@
 class outbound;
 
 typedef struct {
-    uint16_t tproxy_port = 100;
+    uint16_t tproxy_port = 1010;
     uint16_t min_port = 10240;
     uint16_t max_port = 65535;
     uint32_t nat_ip = 0;
-    uint32_t new_timeout = 30;
-    uint32_t est_timeout = 300;
+    uint32_t new_timeout = 2;
+    uint32_t est_timeout = 5;
     uint16_t session_per_src = 65535;
     uint8_t nat_type = 1;
 }nat_config_t;
@@ -35,7 +35,8 @@ private:
     outbound *get_outbound(std::pair<uint32_t, uint16_t> int_tuple);
 
 public:
-    nat(nat_config_t config);
+    explicit nat(nat_config_t config);
+
     void run();
 };
 

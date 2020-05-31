@@ -29,11 +29,10 @@ void epoll_util::run() {
     struct epoll_event ready_ev[MAX_EVENTS]{};
     for (;;) {
         int n = epoll_wait(this->fd, ready_ev, MAX_EVENTS, -1);
-        printf("aaa\n");
         assert(n >= 0);
         while (n--) {
             auto *p = (ep_param_t *) ready_ev[n].data.ptr;
-            while(((ep_cb_t) p->cb)(p));
+            while (((ep_cb_t) p->cb)(p));
         }
     }
 

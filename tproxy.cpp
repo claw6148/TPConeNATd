@@ -30,7 +30,6 @@ tproxy::tproxy(nat *n) {
 }
 
 bool tproxy::recv(ep_param_t *param) {
-    printf("ok!\n");
     auto *_this = (tproxy *) param->param;
     dgram_data_t dgram_data;
     if (!dgram_read(param->fd, &dgram_data)) {

@@ -26,9 +26,13 @@ inbound::inbound(outbound *out, pair<uint32_t, uint16_t> ext_tuple) {
     this->wd = new watchdog(this->out->n->ep, (void *) inbound::wd_cb, this);
 }
 
+void inbound::kill() {
+    this->killed = true;
+}
+
 inbound::~inbound() {
     delete this->wd;
-    this->out->inbound_map.erase(this->ext_tuple);
+    if (!this->killed) this->out->inbound_map.erase(this->ext_tuple);
     this->out->inbound_filter_set.erase(this->ext_tuple);
     close(this->fd);
 }

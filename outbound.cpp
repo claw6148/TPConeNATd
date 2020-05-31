@@ -36,9 +36,11 @@ outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
 outbound::~outbound() {
     delete this->wd;
     for (auto &x:this->inbound_map) {
+        x.second->kill();
         delete x.second;
     }
     this->n->outbound_map.erase(this->int_tuple);
+    this->n->ep->del(this->ep_param.fd);
 }
 
 void outbound::wd_cb(void *param) {
