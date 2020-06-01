@@ -11,12 +11,6 @@
 
 using namespace std;
 
-outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
-    this->n = n;
-    this->port = port;
-    this->int_tuple = int_tuple;
-}
-
 void outbound::init() {
     this->ep_param.fd = socket(AF_INET, SOCK_DGRAM, 0);
     THROW_IF_NEG(this->ep_param.fd);
@@ -31,7 +25,7 @@ void outbound::init() {
     sockaddr_in nat{};
     nat.sin_family = AF_INET;
     nat.sin_addr.s_addr = this->n->config.nat_ip;
-    nat.sin_port = htons(this->port);
+    nat.sin_port = this->port;
     THROW_RETRY_IF_NEG(bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in)));
 
     this->wd = new watchdog(n->ep, (void *) outbound::wd_cb, this);
@@ -47,7 +41,7 @@ void outbound::init() {
         s += " <-> ";
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
         s += ":";
-        s += to_string(this->port);
+        s += to_string(ntohs(this->port));
         printf("out-add %s\n", s.c_str());
     }
 }
@@ -55,6 +49,7 @@ void outbound::init() {
 outbound::~outbound() {
     if (this->done) {
         this->n->outbound_map.erase(this->int_tuple);
+        this->n->port_outbound_map.erase(this->port);
         this->n->ep->del(this->ep_param.fd);
         {
             string s;
@@ -64,7 +59,7 @@ outbound::~outbound() {
             s += " <-> ";
             s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
             s += ":";
-            s += to_string(this->port);
+            s += to_string(ntohs(this->port));
             printf("out-del %s duration = %ld tx = %ld rx = %ld\n",
                    s.c_str(),
                    time(nullptr) - this->create_time -

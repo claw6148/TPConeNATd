@@ -22,20 +22,28 @@ typedef struct {
     uint32_t est_timeout = 15;
     uint16_t session_per_src = 65535;
     uint8_t nat_type = 1;
-}nat_config_t;
+} nat_config_t;
 
 class nat {
 private:
     friend class tproxy;
+
     friend class inbound;
+
     friend class outbound;
-    epoll_util *ep{};
+
+    friend class icmp_helper;
+
+    epoll_helper *ep{};
     nat_config_t config;
-    std::map<std::pair<uint32_t, uint16_t>, outbound*> outbound_map;
+    std::map<std::pair<uint32_t, uint16_t>, outbound *> outbound_map;
+    std::map<uint16_t, outbound *> port_outbound_map;
 
     uint16_t get_port();
 
     outbound *get_outbound(std::pair<uint32_t, uint16_t> int_tuple);
+
+    outbound *get_outbound(uint16_t nat_port);
 
     std::queue<uint16_t> port_queue;
 public:

@@ -25,7 +25,9 @@ private:
     static void wd_cb(void *param);
 
 public:
-    inbound(outbound *out, std::pair<uint32_t, uint16_t> ext_tuple);
+    inbound(outbound *out, std::pair<uint32_t, uint16_t> ext_tuple) :
+            out(out),
+            ext_tuple(std::move(ext_tuple)) {};
 
     ~inbound();
 

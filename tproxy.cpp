@@ -7,18 +7,21 @@
 #include "tproxy.h"
 #include "inbound.h"
 #include "dgram_read.h"
+#include "icmp_helper.h"
 
 using namespace std;
 
 tproxy::tproxy(nat *n) {
     this->n = n;
     this->ep_param.fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    THROW_IF_NEG(this->ep_param.fd);
+    set_nonblock(this->ep_param.fd);
+
     int opt = 1;
     THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)));
     THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)));
     THROW_IF_NEG(setsockopt(this->ep_param.fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)));
     THROW_IF_NEG(setsockopt(this->ep_param.fd, SOL_IP, IP_RECVORIGDSTADDR, &opt, sizeof(opt)));
-    set_nonblock(this->ep_param.fd);
     struct sockaddr_in serv{};
     serv.sin_family = AF_INET;
     serv.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -41,11 +44,15 @@ bool tproxy::recv(ep_param_t *param) {
         ((src_addr_host & 0xFFu) == 0xFF || (dst_addr_host & 0xFFu) == 0xFF)) {
         return true;
     }
-    _this->n->get_outbound(
-            make_pair(
-                    dgram_data.src.sin_addr.s_addr,
-                    dgram_data.src.sin_port
-            )
-    )->src_nat(&dgram_data);
+    if (--dgram_data.ttl) {
+        _this->n->get_outbound(
+                make_pair(
+                        dgram_data.src.sin_addr.s_addr,
+                        dgram_data.src.sin_port
+                )
+        )->src_nat(&dgram_data);
+    } else {
+        icmp_helper::reply_ttl_exceed(&dgram_data);
+    }
     return true;
 }

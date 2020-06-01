@@ -13,7 +13,7 @@ bool watchdog::ep_cb(ep_param_t *param) {
     return false;
 }
 
-watchdog::watchdog(epoll_util *ep, void *cb, void *param) {
+watchdog::watchdog(epoll_helper *ep, void *cb, void *param) {
     wd_param.wd = this;
     wd_param.cb = cb;
     wd_param.param = param;

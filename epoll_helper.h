@@ -2,8 +2,8 @@
 // Created by claw6148 on 5/31/20.
 //
 
-#ifndef TPCONENATD_EPOLL_UTIL_H
-#define TPCONENATD_EPOLL_UTIL_H
+#ifndef TPCONENATD_EPOLL_HELPER_H
+#define TPCONENATD_EPOLL_HELPER_H
 
 
 #include <sys/epoll.h>
@@ -19,11 +19,11 @@ typedef struct {
 
 typedef bool(*ep_cb_t)(ep_param_t*);
 
-class epoll_util {
+class epoll_helper {
 private:
     int fd;
 public:
-    epoll_util();
+    epoll_helper();
 
     void run();
 
@@ -34,4 +34,4 @@ public:
 
 };
 
-#endif //TPCONENATD_EPOLL_UTIL_H
+#endif //TPCONENATD_EPOLL_HELPER_H

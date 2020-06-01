@@ -8,7 +8,7 @@
 
 #include <cstdint>
 #include <map>
-#include "epoll_util.h"
+#include "epoll_helper.h"
 #include "util.h"
 #include "outbound.h"
 #include "nat.h"
@@ -17,7 +17,9 @@ class tproxy {
 private:
     nat *n;
     ep_param_t ep_param{};
+
     static bool recv(ep_param_t *param);
+
 public:
     explicit tproxy(nat *n);
 };

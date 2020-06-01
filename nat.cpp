@@ -7,6 +7,7 @@
 #include <set>
 #include "nat.h"
 #include "tproxy.h"
+#include "icmp_helper.h"
 
 using namespace std;
 
@@ -37,12 +38,10 @@ outbound *nat::get_outbound(pair<uint32_t, uint16_t> int_tuple) {
     outbound *out;
     auto it = this->outbound_map.find(int_tuple);
     if (it == this->outbound_map.end()) {
+        uint16_t nat_port;
         while (true) {
-            out = new outbound(
-                    this,
-                    this->get_port(),
-                    int_tuple
-            );
+            nat_port = ntohs(this->get_port());
+            out = new outbound(this, nat_port, int_tuple);
             try {
                 out->init();
                 break;
@@ -55,14 +54,21 @@ outbound *nat::get_outbound(pair<uint32_t, uint16_t> int_tuple) {
             }
         }
         this->outbound_map[int_tuple] = out;
+        this->port_outbound_map[nat_port] = out;
     } else {
         out = (*it).second;
     }
     return out;
 }
 
+outbound *nat::get_outbound(uint16_t nat_port) {
+    auto it = this->port_outbound_map.find(nat_port);
+    return it == this->port_outbound_map.end() ? nullptr : (*it).second;
+}
+
 void nat::run() {
-    this->ep = new epoll_util();
+    this->ep = new epoll_helper();
+    new icmp_helper(this);
     new tproxy(this);
     this->ep->run();
 }

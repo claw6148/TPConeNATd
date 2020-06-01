@@ -34,7 +34,7 @@ int main() {
 //#include <csignal>
 //#include <cinttypes>
 //#include <sys/timerfd.h>
-//#include "epoll_util.h"
+//#include "epoll_helper.h"
 //#include "util.h"
 //
 //using namespace std;
@@ -99,7 +99,7 @@ int main() {
 //    set<pair<uint32_t, uint16_t>> inbound_filter_set;
 //} nat_t;
 //
-//epoll_util ep;
+//epoll_helper ep;
 //
 //map<pair<uint32_t, uint16_t>, nat_t> src_nat_map;
 //map<uint16_t, nat_t *> dst_nat_map;

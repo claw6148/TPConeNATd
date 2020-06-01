@@ -13,11 +13,6 @@ void inbound::wd_cb(void *param) {
     delete (inbound *) param;
 }
 
-inbound::inbound(outbound *out, pair<uint32_t, uint16_t> ext_tuple) {
-    this->out = out;
-    this->ext_tuple = ext_tuple;
-}
-
 void inbound::init() {
     this->fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     THROW_IF_NEG(this->fd);
@@ -41,7 +36,7 @@ void inbound::init() {
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
         s += ":";
         s += to_string(this->out->port);
-        s += "-> ";
+        s += " -> ";
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
         s += ":";
         s += to_string(ntohs(this->out->int_tuple.second));

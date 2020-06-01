@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <utility>
 #include <netinet/in.h>
 
 class inbound;
@@ -21,6 +22,8 @@ class nat;
 class outbound {
 private:
     friend class inbound;
+
+    friend class icmp_helper;
 
     bool done = false;
     time_t create_time = 0;
@@ -43,7 +46,10 @@ private:
     static bool dst_nat(ep_param_t *param);
 
 public:
-    outbound(nat *n, uint16_t port, std::pair<uint32_t, uint16_t> int_tuple);
+    outbound(nat *n, uint16_t port, std::pair<uint32_t, uint16_t> int_tuple) :
+            n(n),
+            port(port),
+            int_tuple(std::move(int_tuple)) {};
 
     ~outbound();
 
