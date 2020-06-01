@@ -25,7 +25,7 @@ tproxy::tproxy(nat *n) {
     struct sockaddr_in serv{};
     serv.sin_family = AF_INET;
     serv.sin_addr.s_addr = htonl(INADDR_ANY);
-    serv.sin_port = htons(n->config.tproxy_port);
+    serv.sin_port = htons(n->cfg.tproxy_port);
     THROW_IF_NEG(bind(this->ep_param.fd, (const struct sockaddr *) &serv, sizeof(serv)));
     this->ep_param.cb = (void *) tproxy::recv;
     this->ep_param.param = this;

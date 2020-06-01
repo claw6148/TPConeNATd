@@ -7,12 +7,127 @@
 //
 
 
+#include <arpa/inet.h>
+#include <cstring>
+#include <csignal>
+#include <fcntl.h>
 #include "nat.h"
+#include "util.h"
 
-int main() {
-    nat_config_t config;
-    nat n(config);
-    n.run();
+using namespace std;
+
+config cfg;
+
+bool run_as_daemon = false;
+
+void write_pid(char *pid_file) {
+    int fd = open(pid_file, (uint32_t) O_RDWR | (uint32_t) O_CREAT, 0666);
+    struct flock lock{};
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+    THROW_IF_NEG(fcntl(fd, F_SETLK, &lock));
+    char pid_str[12];
+    sprintf(pid_str, "%d\n", getpid());
+    size_t len = strlen(pid_str);
+    THROW_IF_NEG(write(fd, pid_str, len));
+}
+
+void usage_and_exit() {
+    printf("Usage:\n");
+    printf("  -h Help\n");
+    printf("  -p TPROXY port\n");
+    printf("  -i Minimum port (default: %d)\n", cfg.min_port);
+    printf("  -x Maximum port (default: %d)\n", cfg.max_port);
+    printf("  -s NAT ip (default: 0.0.0.0, depends on system)\n");
+    printf("  -n NEW(no reply) timeout (default: %d)\n", cfg.new_timeout);
+    printf("  -e ESTABLISHED timeout (default: %d)\n", cfg.est_timeout);
+    printf("  -o Session limit per source ip (default: %d)\n", cfg.session_per_src);
+    printf("  -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: %d)\n", cfg.nat_type);
+    printf("  -f PID file\n");
+    printf("  -l Log level (default: %d)\n", cfg.log_level);
+    printf("  -d Run as daemon, log to syslog\n");
+    exit(0);
+}
+
+int main(int argc, char *argv[]) {
+    printf("TPConeNATd by claw6148\n\n");
+    if (argc == 1) usage_and_exit();
+    char pid_file[0x100]{};
+    for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:f:l:d")) != -1;) {
+        switch (ch) {
+            case 'h':
+                usage_and_exit();
+                break;
+            case 'p':
+                cfg.tproxy_port = stol(optarg);
+                break;
+            case 'i':
+                cfg.min_port = stol(optarg);
+                break;
+            case 'x':
+                cfg.max_port = stol(optarg);
+                break;
+            case 's':
+                cfg.nat_ip = inet_addr(optarg);
+                break;
+            case 'n':
+                cfg.new_timeout = stol(optarg);
+                break;
+            case 'e':
+                cfg.est_timeout = stol(optarg);
+                break;
+            case 'o':
+                cfg.session_per_src = stol(optarg);
+                break;
+            case 't':
+                cfg.nat_type = stol(optarg);
+                break;
+            case 'f':
+                strcpy(pid_file, optarg);
+                break;
+            case 'l':
+                cfg.log_level = stol(optarg);
+                break;
+            case 'd':
+                run_as_daemon = true;
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (cfg.min_port >= cfg.max_port) {
+        printf("Invalid port range!\n");
+        return 1;
+    }
+
+    if (cfg.nat_type < 1 || cfg.nat_type > 3) {
+        printf("Invalid NAT type!\n");
+        return 1;
+    }
+//
+//    PRINT_DEC(tproxy_port);
+//    PRINT_DEC(min_port);
+//    PRINT_DEC(max_port);
+//    PRINT_IP(nat_ip);
+//    PRINT_DEC(new_timeout);
+//    PRINT_DEC(est_timeout);
+//    PRINT_DEC(session_per_src);
+//    PRINT_DEC(nat_type);
+//    PRINT_DEC(log_level);
+//
+//    LOG(LOG_INFO, "Started!");
+//
+//    if (run_as_daemon) FUCK(daemon(1, 1) < 0);
+//    if (strlen(pid_file)) write_pid(pid_file);
+//
+//    signal(SIGINT, bye);
+//    signal(SIGTERM, bye);
+//
+//    srandom(time(nullptr));
+    cfg.tproxy_port = 0;
+    cfg.validate();
+    nat(cfg).run();
 }
 
 

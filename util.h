@@ -17,11 +17,12 @@ public:
 
 #define THROW_IF_EX(expr, exc) do { \
     if (!(expr)) break; \
-    throw exc(__FILE__":" + std::to_string(__LINE__)); \
+    throw exc(__FILE__":" + std::to_string(__LINE__) + " "#expr); \
 } while(0)
 
-#define THROW_IF_NEG(expr) THROW_IF_EX((expr) < 0, std::runtime_error)
-#define THROW_RETRY_IF_NEG(expr) THROW_IF_EX((expr) < 0, retry_exception)
+#define THROW_IF(expr) THROW_IF_EX(expr, std::runtime_error)
+#define THROW_IF_NEG(expr) THROW_IF(expr < 0)
+#define THROW_RETRY_IF_NEG(expr) THROW_IF_EX(expr < 0, retry_exception)
 
 void inline set_nonblock(int fd) {
     int fl;

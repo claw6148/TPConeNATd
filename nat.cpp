@@ -11,15 +11,15 @@
 
 using namespace std;
 
-nat::nat(nat_config_t config) {
-    this->config = config;
+nat::nat(config cfg) {
+    this->cfg = cfg;
 
     set<uint16_t> visited_port;
-    uint16_t total_port = this->config.max_port - this->config.min_port;
+    uint16_t total_port = this->cfg.max_port - this->cfg.min_port;
     for (int i = 0; i < total_port; ++i) {
         uint16_t nat_port;
         do {
-            nat_port = this->config.min_port + (random() % (total_port + 1));
+            nat_port = this->cfg.min_port + (random() % (total_port + 1));
         } while (visited_port.find(nat_port) != visited_port.end());
         visited_port.insert(nat_port);
         this->port_queue.push(nat_port);

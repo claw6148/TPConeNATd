@@ -33,7 +33,7 @@ void inbound::init() {
         s += ":";
         s += to_string(ntohs(ext_tuple.second));
         s += " -> ";
-        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->cfg.nat_ip));
         s += ":";
         s += to_string(this->out->port);
         s += " -> ";
@@ -55,7 +55,7 @@ inbound::~inbound() {
             s += ":";
             s += to_string(ntohs(ext_tuple.second));
             s += " -> ";
-            s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
+            s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->cfg.nat_ip));
             s += ":";
             s += to_string(this->out->port);
             s += " -> ";
@@ -64,7 +64,7 @@ inbound::~inbound() {
             s += to_string(ntohs(this->out->int_tuple.second));
             printf("in-del %s duration = %ld\n",
                    s.c_str(),
-                   time(nullptr) - this->create_time - this->out->n->config.est_timeout
+                   time(nullptr) - this->create_time - this->out->n->cfg.est_timeout
             );
         }
         if (this->out->inbound_map.empty()) delete this->out;
@@ -93,5 +93,5 @@ void inbound::send(dgram_data_t *dgram_data) {
             (struct sockaddr *) &dst,
             sizeof(struct sockaddr_in)
     ));
-    wd->feed(this->out->n->config.est_timeout);
+    wd->feed(this->out->n->cfg.est_timeout);
 }

@@ -24,7 +24,7 @@ void outbound::init() {
 
     sockaddr_in nat{};
     nat.sin_family = AF_INET;
-    nat.sin_addr.s_addr = this->n->config.nat_ip;
+    nat.sin_addr.s_addr = this->n->cfg.nat_ip;
     nat.sin_port = this->port;
     THROW_RETRY_IF_NEG(bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in)));
 
@@ -39,7 +39,7 @@ void outbound::init() {
         s += ":";
         s += to_string(ntohs(int_tuple.second));
         s += " <-> ";
-        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
+        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->cfg.nat_ip));
         s += ":";
         s += to_string(ntohs(this->port));
         printf("out-add %s\n", s.c_str());
@@ -57,13 +57,13 @@ outbound::~outbound() {
             s += ":";
             s += to_string(ntohs(int_tuple.second));
             s += " <-> ";
-            s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
+            s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->cfg.nat_ip));
             s += ":";
             s += to_string(ntohs(this->port));
             printf("out-del %s duration = %ld tx = %ld rx = %ld\n",
                    s.c_str(),
                    time(nullptr) - this->create_time -
-                   (this->wd ? this->n->config.new_timeout : this->n->config.est_timeout),
+                   (this->wd ? this->n->cfg.new_timeout : this->n->cfg.est_timeout),
                    this->tx,
                    this->rx
             );
@@ -81,11 +81,11 @@ bool outbound::dst_nat(ep_param_t *param) {
     dgram_data_t dgram_data;
     if (!dgram_read(param->fd, &dgram_data)) return false;
 
-    if (_this->n->config.nat_type > 1) {
+    if (_this->n->cfg.nat_type > 1) {
         if (_this->inbound_filter_set.find(
                 make_pair(
                         dgram_data.src.sin_addr.s_addr,
-                        _this->n->config.nat_type == 2 ? 0 : dgram_data.src.sin_port
+                        _this->n->cfg.nat_type == 2 ? 0 : dgram_data.src.sin_port
                 )
         ) == _this->inbound_filter_set.end()) {
             return true;
@@ -125,11 +125,11 @@ void outbound::src_nat(dgram_data_t *dgram_data) {
         setsockopt(this->ep_param.fd, IPPROTO_IP, IP_TOS, &dgram_data->tos, sizeof(dgram_data->tos));
         this->tos = dgram_data->tos;
     }
-    if (this->n->config.nat_type > 1) {
+    if (this->n->cfg.nat_type > 1) {
         this->inbound_filter_set.insert(
                 make_pair(
                         dgram_data->dst.sin_addr.s_addr,
-                        this->n->config.nat_type == 2 ? 0 : dgram_data->dst.sin_port
+                        this->n->cfg.nat_type == 2 ? 0 : dgram_data->dst.sin_port
                 )
         );
     }
@@ -141,6 +141,6 @@ void outbound::src_nat(dgram_data_t *dgram_data) {
             (struct sockaddr *) &dgram_data->dst,
             sizeof(struct sockaddr_in)
     ));
-    if (this->wd) this->wd->feed(this->n->config.new_timeout);
+    if (this->wd) this->wd->feed(this->n->cfg.new_timeout);
     this->tx += dgram_data->data_len;
 }
