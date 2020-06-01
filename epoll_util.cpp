@@ -5,6 +5,8 @@
 #include "epoll_util.h"
 #include "util.h"
 
+using namespace std;
+
 epoll_util::epoll_util() {
     this->fd = epoll_create1(0);
     THROW_IF_NEG(this->fd);
@@ -32,7 +34,11 @@ void epoll_util::run() {
         THROW_IF_NEG(n);
         while (n--) {
             auto *p = (ep_param_t *) ready_ev[n].data.ptr;
-            while (((ep_cb_t) p->cb)(p));
+            try {
+                while (((ep_cb_t) p->cb)(p));
+            } catch (runtime_error &e) {
+                perror(e.what());
+            }
         }
     }
 

@@ -15,12 +15,15 @@
 #include <netinet/in.h>
 
 class inbound;
+
 class nat;
 
 class outbound {
 private:
     friend class inbound;
 
+    bool done = false;
+    time_t create_time = 0;
     nat *n;
     uint16_t port;
     uint64_t rx = 0;
@@ -31,7 +34,7 @@ private:
     std::map<std::pair<uint32_t, uint16_t>, inbound *> inbound_map;
     std::set<std::pair<uint32_t, uint16_t>> inbound_filter_set;
 
-    watchdog *wd;
+    watchdog *wd = nullptr;
 
     static void wd_cb(void *param);
 
@@ -46,6 +49,7 @@ public:
 
     void src_nat(dgram_data_t *dgram_data);
 
+    void init();
 };
 
 #endif //TPCONENATD_OUTBOUND_H

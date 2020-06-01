@@ -16,6 +16,9 @@ void inbound::wd_cb(void *param) {
 inbound::inbound(outbound *out, pair<uint32_t, uint16_t> ext_tuple) {
     this->out = out;
     this->ext_tuple = ext_tuple;
+}
+
+void inbound::init() {
     this->fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     THROW_IF_NEG(this->fd);
     int opt = 1;
@@ -27,6 +30,8 @@ inbound::inbound(outbound *out, pair<uint32_t, uint16_t> ext_tuple) {
     src.sin_port = ext_tuple.second;
     THROW_IF_NEG(bind(this->fd, (struct sockaddr *) &src, sizeof(struct sockaddr_in)));
     this->wd = new watchdog(this->out->n->ep, (void *) inbound::wd_cb, this);
+    this->done = true;
+    this->create_time = time(nullptr);
     {
         string s;
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&ext_tuple.first));
@@ -36,7 +41,7 @@ inbound::inbound(outbound *out, pair<uint32_t, uint16_t> ext_tuple) {
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
         s += ":";
         s += to_string(this->out->port);
-        s += " -> ";
+        s += "-> ";
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
         s += ":";
         s += to_string(ntohs(this->out->int_tuple.second));
@@ -45,26 +50,31 @@ inbound::inbound(outbound *out, pair<uint32_t, uint16_t> ext_tuple) {
 }
 
 inbound::~inbound() {
-    delete this->wd;
-    this->out->inbound_filter_set.erase(this->ext_tuple);
-    close(this->fd);
-    this->out->inbound_map.erase(this->ext_tuple);
-    {
-        string s;
-        s += inet_ntoa(*reinterpret_cast<in_addr *>(&ext_tuple.first));
-        s += ":";
-        s += to_string(ntohs(ext_tuple.second));
-        s += " -> ";
-        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
-        s += ":";
-        s += to_string(this->out->port);
-        s += " -> ";
-        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
-        s += ":";
-        s += to_string(ntohs(this->out->int_tuple.second));
-        printf("in-del %s\n", s.c_str());
+    if (this->done) {
+        delete this->wd;
+        this->out->inbound_filter_set.erase(this->ext_tuple);
+        this->out->inbound_map.erase(this->ext_tuple);
+        {
+            string s;
+            s += inet_ntoa(*reinterpret_cast<in_addr *>(&ext_tuple.first));
+            s += ":";
+            s += to_string(ntohs(ext_tuple.second));
+            s += " -> ";
+            s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->config.nat_ip));
+            s += ":";
+            s += to_string(this->out->port);
+            s += " -> ";
+            s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
+            s += ":";
+            s += to_string(ntohs(this->out->int_tuple.second));
+            printf("in-del %s duration = %ld\n",
+                   s.c_str(),
+                   time(nullptr) - this->create_time - this->out->n->config.est_timeout
+            );
+        }
+        if (this->out->inbound_map.empty()) delete this->out;
     }
-    if (this->out->inbound_map.empty()) delete this->out;
+    close(this->fd);
 }
 
 void inbound::send(dgram_data_t *dgram_data) {

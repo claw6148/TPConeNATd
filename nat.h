@@ -9,6 +9,7 @@
 #include "dgram_read.h"
 #include <cstdint>
 #include <map>
+#include <queue>
 
 class outbound;
 
@@ -31,9 +32,12 @@ private:
     epoll_util *ep{};
     nat_config_t config;
     std::map<std::pair<uint32_t, uint16_t>, outbound*> outbound_map;
-    uint16_t alloc_port();
+
+    uint16_t get_port();
+
     outbound *get_outbound(std::pair<uint32_t, uint16_t> int_tuple);
 
+    std::queue<uint16_t> port_queue;
 public:
     explicit nat(nat_config_t config);
 

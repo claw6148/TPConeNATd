@@ -15,8 +15,9 @@ outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
     this->n = n;
     this->port = port;
     this->int_tuple = int_tuple;
-    this->wd = new watchdog(n->ep, (void *) outbound::wd_cb, this);
+}
 
+void outbound::init() {
     this->ep_param.fd = socket(AF_INET, SOCK_DGRAM, 0);
     THROW_IF_NEG(this->ep_param.fd);
     this->ep_param.cb = (void *) outbound::dst_nat;
@@ -31,9 +32,12 @@ outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
     nat.sin_family = AF_INET;
     nat.sin_addr.s_addr = this->n->config.nat_ip;
     nat.sin_port = htons(this->port);
-    THROW_IF_NEG(bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in)));
+    THROW_RETRY_IF_NEG(bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in)));
 
-    n->ep->add(&this->ep_param);
+    this->wd = new watchdog(n->ep, (void *) outbound::wd_cb, this);
+    this->n->ep->add(&this->ep_param);
+    this->done = true;
+    this->create_time = time(nullptr);
 
     {
         string s;
@@ -49,20 +53,28 @@ outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
 }
 
 outbound::~outbound() {
-    this->n->outbound_map.erase(this->int_tuple);
-    this->n->ep->del(this->ep_param.fd);
-    close(this->ep_param.fd);
-    {
-        string s;
-        s += inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first));
-        s += ":";
-        s += to_string(ntohs(int_tuple.second));
-        s += " <-> ";
-        s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
-        s += ":";
-        s += to_string(this->port);
-        printf("out-del %s\n", s.c_str());
+    if (this->done) {
+        this->n->outbound_map.erase(this->int_tuple);
+        this->n->ep->del(this->ep_param.fd);
+        {
+            string s;
+            s += inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first));
+            s += ":";
+            s += to_string(ntohs(int_tuple.second));
+            s += " <-> ";
+            s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->config.nat_ip));
+            s += ":";
+            s += to_string(this->port);
+            printf("out-del %s duration = %ld tx = %ld rx = %ld\n",
+                   s.c_str(),
+                   time(nullptr) - this->create_time -
+                   (this->wd ? this->n->config.new_timeout : this->n->config.est_timeout),
+                   this->tx,
+                   this->rx
+            );
+        }
     }
+    close(this->ep_param.fd);
 }
 
 void outbound::wd_cb(void *param) {
@@ -90,6 +102,12 @@ bool outbound::dst_nat(ep_param_t *param) {
     auto it = _this->inbound_map.find(key);
     if (it == _this->inbound_map.end()) {
         in = new inbound(_this, key);
+        try {
+            in->init();
+        } catch (runtime_error &e) {
+            delete in;
+            throw e;
+        }
         _this->inbound_map[key] = in;
     } else {
         in = (*it).second;
