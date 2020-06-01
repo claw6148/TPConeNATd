@@ -19,7 +19,7 @@ private:
     ep_param_t ep_param{};
     static bool recv(ep_param_t *param);
 public:
-    tproxy(nat *n);
+    explicit tproxy(nat *n);
 };
 
 

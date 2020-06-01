@@ -18,19 +18,20 @@ outbound::outbound(nat *n, uint16_t port, pair<uint32_t, uint16_t> int_tuple) {
     this->wd = new watchdog(n->ep, (void *) outbound::wd_cb, this);
 
     this->ep_param.fd = socket(AF_INET, SOCK_DGRAM, 0);
+    THROW_IF_NEG(this->ep_param.fd);
     this->ep_param.cb = (void *) outbound::dst_nat;
     this->ep_param.param = this;
 
     int opt = 1;
-    setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt));
-    setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt));
+    THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)));
+    THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)));
     set_nonblock(this->ep_param.fd);
 
     sockaddr_in nat{};
     nat.sin_family = AF_INET;
     nat.sin_addr.s_addr = this->n->config.nat_ip;
     nat.sin_port = htons(this->port);
-    bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in));
+    THROW_IF_NEG(bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in)));
 
     n->ep->add(&this->ep_param);
 
@@ -71,13 +72,7 @@ void outbound::wd_cb(void *param) {
 bool outbound::dst_nat(ep_param_t *param) {
     auto *_this = (outbound *) param->param;
     dgram_data_t dgram_data;
-    if (!dgram_read(param->fd, &dgram_data)) {
-        if (errno == EAGAIN) return false;
-        else {
-            perror("?");
-            return false;
-        }
-    }
+    if (!dgram_read(param->fd, &dgram_data)) return false;
 
     if (_this->n->config.nat_type > 1) {
         if (_this->inbound_filter_set.find(
@@ -125,14 +120,14 @@ void outbound::src_nat(dgram_data_t *dgram_data) {
                 )
         );
     }
-    sendto(
+    THROW_IF_NEG(sendto(
             this->ep_param.fd,
             dgram_data->data,
             dgram_data->data_len,
             0,
             (struct sockaddr *) &dgram_data->dst,
             sizeof(struct sockaddr_in)
-    );
+    ));
     if (this->wd) this->wd->feed(this->n->config.new_timeout);
     this->tx += dgram_data->data_len;
 }

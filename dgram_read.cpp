@@ -4,7 +4,9 @@
 
 #include <netinet/in.h>
 #include <cstring>
+#include <cerrno>
 #include "dgram_read.h"
+#include "util.h"
 
 #ifndef IP_ORIGADDRS
 #define IP_ORIGADDRS      20
@@ -28,8 +30,9 @@ bool dgram_read(int fd, dgram_data_t *dgram_data) {
             .msg_control = ctl,
             .msg_controllen = sizeof(ctl),
     };
-
-    if ((dgram_data->data_len = recvmsg(fd, &msg, 0)) <= 0) return false;
+    dgram_data->data_len = recvmsg(fd, &msg, 0);
+    if (dgram_data->data_len < 0 && errno == EAGAIN) return false;
+    THROW_IF_NEG(dgram_data->data_len);
 
     for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
         if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGADDRS) {

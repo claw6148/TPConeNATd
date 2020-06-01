@@ -28,7 +28,7 @@ uint16_t nat::alloc_port() {
     return 0;
 }
 
-outbound *nat::get_outbound(std::pair<uint32_t, uint16_t> int_tuple) {
+outbound *nat::get_outbound(pair<uint32_t, uint16_t> int_tuple) {
     outbound *out;
     auto it = this->outbound_map.find(int_tuple);
     if (it == this->outbound_map.end()) {
