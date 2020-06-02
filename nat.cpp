@@ -76,6 +76,11 @@ outbound *nat::get_outbound(uint16_t nat_port) {
 void nat::run() {
     this->ep = new epoll_helper();
 
+    if (this->cfg.sender_thread > 1) {
+        LOG(LOG_INFO, "using multi-thread sender");
+        this->sender = new mt_sender(cfg.sender_thread);
+    }
+
     auto *ih = new icmp_helper(this);
     try {
         ih->init();

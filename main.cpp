@@ -34,6 +34,7 @@ void usage_and_exit() {
     printf("  -e ESTABLISHED timeout (default: %d)\n", cfg.est_timeout);
     printf("  -o Session limit per source ip (default: %d)\n", cfg.session_per_src);
     printf("  -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: %d)\n", cfg.nat_type);
+    printf("  -r Sender thread (default: %d)\n", cfg.sender_thread);
     printf("  -f PID file\n");
     printf("  -l Log level (default: %d)\n", log_level);
     printf("  -d Run as daemon, log to syslog\n");
@@ -46,7 +47,7 @@ int main(int argc, char *argv[]) {
     try {
         config cfg;
         char pid_file[0x100]{};
-        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:f:l:d")) != -1;) {
+        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:r:f:l:d")) != -1;) {
             switch (ch) {
                 case 'h':
                     usage_and_exit();
@@ -80,6 +81,9 @@ int main(int argc, char *argv[]) {
                     break;
                 case 'l':
                     log_level = stol(optarg);
+                    break;
+                case 'r':
+                    cfg.sender_thread = stol(optarg);
                     break;
                 case 'd':
                     run_as_daemon = true;

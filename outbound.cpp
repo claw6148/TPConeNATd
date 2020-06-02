@@ -53,7 +53,7 @@ void outbound::init() {
 
 outbound::~outbound() {
     if (this->done) {
-        if (this->wd) delete this->wd;
+        delete this->wd;
         this->n->session_counter[this->int_tuple.first]--;
         this->n->outbound_map.erase(this->int_tuple);
         this->n->port_outbound_map.erase(this->port);
@@ -140,14 +140,23 @@ void outbound::src_nat(dgram_data_t *dgram_data) {
                 )
         );
     }
-    THROW_IF_NEG(sendto(
-            this->ep_param.fd,
-            dgram_data->data,
-            dgram_data->data_len,
-            0,
-            (struct sockaddr *) &dgram_data->dst,
-            sizeof(struct sockaddr_in)
-    ));
+    if (this->n->sender) {
+        this->n->sender->send(
+                this->ep_param.fd,
+                dgram_data->data,
+                dgram_data->data_len,
+                &dgram_data->dst
+        );
+    } else {
+        THROW_IF_NEG(sendto(
+                this->ep_param.fd,
+                dgram_data->data,
+                dgram_data->data_len,
+                0,
+                (struct sockaddr *) &dgram_data->dst,
+                sizeof(struct sockaddr_in)
+        ));
+    }
     if (this->wd) this->wd->feed(this->n->cfg.new_timeout);
     this->tx += dgram_data->data_len;
 }

@@ -18,6 +18,7 @@ public:
     uint32_t est_timeout = 300;
     uint16_t session_per_src = 65535;
     uint8_t nat_type = 1;
+    uint16_t sender_thread = 1;
 
     void validate();
 

@@ -12,6 +12,8 @@
 #include <map>
 #include <queue>
 
+#include "mt_sender.h"
+
 class outbound;
 
 class nat {
@@ -23,6 +25,8 @@ private:
     friend class outbound;
 
     friend class icmp_helper;
+
+    mt_sender *sender{};
 
     epoll_helper *ep{};
     config cfg;

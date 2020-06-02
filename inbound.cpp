@@ -85,13 +85,22 @@ void inbound::send(dgram_data_t *dgram_data) {
     dst.sin_family = AF_INET;
     dst.sin_addr.s_addr = this->out->int_tuple.first;
     dst.sin_port = this->out->int_tuple.second;
-    THROW_IF_NEG(sendto(
-            this->fd,
-            dgram_data->data,
-            dgram_data->data_len,
-            0,
-            (struct sockaddr *) &dst,
-            sizeof(struct sockaddr_in)
-    ));
+    if (this->out->n->sender) {
+        this->out->n->sender->send(
+                this->fd,
+                dgram_data->data,
+                dgram_data->data_len,
+                &dst
+        );
+    } else {
+        THROW_IF_NEG(sendto(
+                this->fd,
+                dgram_data->data,
+                dgram_data->data_len,
+                0,
+                (struct sockaddr *) &dst,
+                sizeof(struct sockaddr_in)
+        ));
+    }
     this->wd->feed(this->out->n->cfg.est_timeout);
 }

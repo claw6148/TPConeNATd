@@ -15,6 +15,7 @@
 -e ESTABLISHED timeout (default: 300)
 -o Session limit per source ip (default: 65535, unlimited)
 -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: 1)
+-r Sender thread (default: 1)
 -f PID file
 -l Log level (default: 6. INFO)
 -d Run as daemon, log to syslog
@@ -79,13 +80,21 @@ tpconenatd -p ${TP_PORT} -s ${NAT_IP} -i 4096 -x 65535 -d
 
 Xeon E5-2670 / Debian 9
 
-载荷长度 | SNAT Mbps | SNAT Kpps | SNAT 丢包率 | DNAT Mbps | DNAT Kpps | DNAT 丢包率
--|-|-|-|-|-|-
-12 | 11.6 | 121.00 | 0.85% | 12.3 | 128.31 | 0.55%
-730 | 677 | 115.86 | 0.50% | 525 | 89.90 | 0.93%
-1472 | 1410 | 119.57 | 0.84% | 1040 | 88.78 | 0.33%
+- 单线程  `-r 1`
 
-*丢包率1%以内，非全速*
+载荷长度 | SNAT Mbps | SNAT Kpps | DNAT Mbps | DNAT Kpps
+-|-|-|-|-
+12 | 6.51 | 67.83 | 6.95 | 72.37
+730 | 404 | 69.18 | 417 | 71.40
+1472 | 827 | 70.36 | 846 | 71.95
+
+- 多线程 `-r 16`
+
+载荷长度 | SNAT Mbps | SNAT Kpps | DNAT Mbps | DNAT Kpps
+-|-|-|-|-
+12 | 19.6 | 203.89 | 19.5 | 203.62
+730 | 1180 | 202.25 | 1220 | 209.34
+1472 | 2390 | 203.23 |  2440 | 207.73
 
 ## 建议
 
