@@ -26,14 +26,19 @@ void outbound::init() {
     nat.sin_family = AF_INET;
     nat.sin_addr.s_addr = this->n->cfg.nat_ip;
     nat.sin_port = this->port;
-    THROW_RETRY_IF_NEG(bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in)));
-
+    int bind_ret = bind(this->ep_param.fd, (const sockaddr *) &nat, sizeof(struct sockaddr_in));
+    if (bind_ret < 0) {
+        if (errno == EADDRINUSE)
+            THROW_RETRY_IF_NEG(bind_ret);
+        else
+            THROW_IF_NEG(bind_ret);
+    }
     this->wd = new watchdog(n->ep, (void *) outbound::wd_cb, this);
     this->n->ep->add(&this->ep_param);
     this->done = true;
     this->create_time = time(nullptr);
 
-    {
+    LOG_REQUIRED(LOG_INFO) {
         string s;
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first));
         s += ":";
@@ -42,16 +47,17 @@ void outbound::init() {
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->cfg.nat_ip));
         s += ":";
         s += to_string(ntohs(this->port));
-        printf("out-add %s\n", s.c_str());
+        LOG(LOG_INFO, "out-add %s", s.c_str());
     }
 }
 
 outbound::~outbound() {
     if (this->done) {
+        this->n->session_counter[this->int_tuple.first]--;
         this->n->outbound_map.erase(this->int_tuple);
         this->n->port_outbound_map.erase(this->port);
         this->n->ep->del(this->ep_param.fd);
-        {
+        LOG_REQUIRED(LOG_INFO) {
             string s;
             s += inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first));
             s += ":";
@@ -60,12 +66,12 @@ outbound::~outbound() {
             s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->n->cfg.nat_ip));
             s += ":";
             s += to_string(ntohs(this->port));
-            printf("out-del %s duration = %ld tx = %ld rx = %ld\n",
-                   s.c_str(),
-                   time(nullptr) - this->create_time -
-                   (this->wd ? this->n->cfg.new_timeout : this->n->cfg.est_timeout),
-                   this->tx,
-                   this->rx
+            LOG(LOG_INFO, "out-del %s duration = %ld tx = %ld rx = %ld",
+                s.c_str(),
+                time(nullptr) - this->create_time -
+                (this->wd ? this->n->cfg.new_timeout : this->n->cfg.est_timeout),
+                this->tx,
+                this->rx
             );
         }
     }

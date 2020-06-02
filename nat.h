@@ -26,6 +26,7 @@ private:
 
     epoll_helper *ep{};
     config cfg;
+    std::map<uint32_t, uint16_t> session_counter;
     std::map<std::pair<uint32_t, uint16_t>, outbound *> outbound_map;
     std::map<uint16_t, outbound *> port_outbound_map;
 

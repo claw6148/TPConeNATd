@@ -37,9 +37,8 @@ void epoll_helper::run() {
             try {
                 while (((ep_cb_t) p->cb)(p));
             } catch (runtime_error &e) {
-                perror(e.what());
+                PERROR(e.what());
             }
         }
     }
-
 }

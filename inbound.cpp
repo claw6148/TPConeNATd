@@ -27,7 +27,7 @@ void inbound::init() {
     this->wd = new watchdog(this->out->n->ep, (void *) inbound::wd_cb, this);
     this->done = true;
     this->create_time = time(nullptr);
-    {
+    LOG_REQUIRED(LOG_INFO) {
         string s;
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&ext_tuple.first));
         s += ":";
@@ -35,12 +35,12 @@ void inbound::init() {
         s += " -> ";
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->cfg.nat_ip));
         s += ":";
-        s += to_string(this->out->port);
+        s += to_string(ntohs(this->out->port));
         s += " -> ";
         s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
         s += ":";
         s += to_string(ntohs(this->out->int_tuple.second));
-        printf("in-add %s\n", s.c_str());
+        LOG(LOG_INFO, "in-add %s", s.c_str());
     }
 }
 
@@ -49,7 +49,7 @@ inbound::~inbound() {
         delete this->wd;
         this->out->inbound_filter_set.erase(this->ext_tuple);
         this->out->inbound_map.erase(this->ext_tuple);
-        {
+        LOG_REQUIRED(LOG_INFO) {
             string s;
             s += inet_ntoa(*reinterpret_cast<in_addr *>(&ext_tuple.first));
             s += ":";
@@ -57,14 +57,14 @@ inbound::~inbound() {
             s += " -> ";
             s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->n->cfg.nat_ip));
             s += ":";
-            s += to_string(this->out->port);
+            s += to_string(ntohs(this->out->port));
             s += " -> ";
             s += inet_ntoa(*reinterpret_cast<in_addr *>(&this->out->int_tuple.first));
             s += ":";
             s += to_string(ntohs(this->out->int_tuple.second));
-            printf("in-del %s duration = %ld\n",
-                   s.c_str(),
-                   time(nullptr) - this->create_time - this->out->n->cfg.est_timeout
+            LOG(LOG_INFO, "in-del %s duration = %ld",
+                s.c_str(),
+                time(nullptr) - this->create_time - this->out->n->cfg.est_timeout
             );
         }
         if (this->out->inbound_map.empty()) delete this->out;

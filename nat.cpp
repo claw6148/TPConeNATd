@@ -8,12 +8,12 @@
 #include "nat.h"
 #include "tproxy.h"
 #include "icmp_helper.h"
+#include <arpa/inet.h>
 
 using namespace std;
 
 nat::nat(config cfg) {
     this->cfg = cfg;
-
     set<uint16_t> visited_port;
     uint16_t total_port = this->cfg.max_port - this->cfg.min_port;
     for (int i = 0; i < total_port; ++i) {
@@ -38,6 +38,12 @@ outbound *nat::get_outbound(pair<uint32_t, uint16_t> int_tuple) {
     outbound *out;
     auto it = this->outbound_map.find(int_tuple);
     if (it == this->outbound_map.end()) {
+        bool session_limit_reached = this->session_counter[int_tuple.first] + 1 > this->cfg.session_per_src;
+        if (session_limit_reached) {
+            errno = 0;
+            THROW_IF_EX(session_limit_reached, warn_exception,
+                        (char *) inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first)));
+        }
         uint16_t nat_port;
         while (true) {
             nat_port = ntohs(this->get_port());
@@ -47,12 +53,13 @@ outbound *nat::get_outbound(pair<uint32_t, uint16_t> int_tuple) {
                 break;
             } catch (retry_exception &e) {
                 delete out;
-                perror(e.what());
+                PERROR(e.what());
             } catch (runtime_error &e) {
                 delete out;
                 throw e;
             }
         }
+        this->session_counter[int_tuple.first]++;
         this->outbound_map[int_tuple] = out;
         this->port_outbound_map[nat_port] = out;
     } else {
