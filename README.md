@@ -1,5 +1,5 @@
 # TPConeNATd
-基于TPROXY的用户模式Full-cone NAT实现
+基于TPROXY的用户模式Cone NAT实现
 
 ![](https://raw.githubusercontent.com/claw6148/TPConeNATd/master/screenshot.png)
 
@@ -20,7 +20,7 @@
 -d Run as daemon, log to syslog
 ```
 
-## 配置示例
+## 配置
 
 ### 基本配置
 
@@ -45,11 +45,11 @@ tpconenatd -p ${TP_PORT} -s ${NAT_IP} -d
 
 以端口范围[1024, 65535]，每个内部地址可**同时**使用1024个端口为例：
 
-单个外部地址可为`(65535-1024+1)/1024=63`个内部地址提供Full-cone NAT服务。
+单个外部地址可为`(65535-1024+1)/1024=63`个内部地址提供Cone NAT服务。
 
 ### 进阶配置2 与原生NAT共存
 
-对于DNS查询（目的端口53）之类不需要使用Full-cone NAT的业务可交由原生NAT处理，以节省端口资源。
+对于DNS查询（目的端口53）之类不需要使用Cone NAT的业务可交由原生NAT处理，以节省端口资源。
 
 划分端口范围：
 
@@ -75,7 +75,7 @@ iptables -t nat -I POSTROUTING -o ${EXT_IF} -p udp --dport 0:1023 -j SNAT --to $
 tpconenatd -p ${TP_PORT} -s ${NAT_IP} -i 4096 -x 65535 -d
 ```
 
-## 性能测试
+## 性能
 
 Xeon E5-2670 / Debian 9
 
@@ -86,3 +86,15 @@ Xeon E5-2670 / Debian 9
 1472 | 1410 | 119.57 | 0.84% | 1040 | 88.78 | 0.33%
 
 *丢包率1%以内，非全速*
+
+## 建议
+
+1. 调大最大fd数
+2. 将NAT类型设为2可兼顾安全性和互通性。
+
+&nbsp; | NAT-1 | NAT-2 | NAT-3 | NAT-4
+-|-|-|-|-
+**NAT-1** | &#10003; | &#10003; | &#10003; | &#10003;
+**NAT-2** | &#10003; | &#10003; | &#10003; | &#10003;
+**NAT-3** | &#10003; | &#10003; | &#10003; | &#10005;
+**NAT-4** | &#10003; | &#10003; | &#10005; | &#10005;
