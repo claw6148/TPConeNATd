@@ -10,15 +10,23 @@
 
 using namespace std;
 
-icmp_helper::icmp_helper(nat *n) {
-    this->n = n;
+icmp_helper::~icmp_helper() {
+    if (this->done) {
+        this->n->ep->del(this->ep_param.fd);
+    }
+    close(this->ep_param.fd);
+}
+
+void icmp_helper::init() {
     this->ep_param.fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    THROW_IF_NEG(this->ep_param.fd);
     set_nonblock(this->ep_param.fd);
     int opt = 1;
     THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_HDRINCL, &opt, sizeof(opt)));
     this->ep_param.cb = (void *) icmp_helper::recv;
     this->ep_param.param = this;
     this->n->ep->add(&this->ep_param);
+    this->done = true;
 }
 
 bool icmp_helper::recv(ep_param_t *param) {

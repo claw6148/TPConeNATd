@@ -93,5 +93,5 @@ void inbound::send(dgram_data_t *dgram_data) {
             (struct sockaddr *) &dst,
             sizeof(struct sockaddr_in)
     ));
-    wd->feed(this->out->n->cfg.est_timeout);
+    this->wd->feed(this->out->n->cfg.est_timeout);
 }

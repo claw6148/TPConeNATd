@@ -15,13 +15,18 @@
 
 class tproxy {
 private:
+    bool done = false;
     nat *n;
     ep_param_t ep_param{};
 
     static bool recv(ep_param_t *param);
 
 public:
-    explicit tproxy(nat *n);
+    explicit tproxy(nat *n) : n(n) {};
+
+    ~tproxy();
+
+    void init();
 };
 
 

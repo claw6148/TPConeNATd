@@ -11,12 +11,17 @@
 
 using namespace std;
 
-tproxy::tproxy(nat *n) {
-    this->n = n;
+tproxy::~tproxy() {
+    if (this->done) {
+        this->n->ep->del(this->ep_param.fd);
+    }
+    close(this->ep_param.fd);
+}
+
+void tproxy::init() {
     this->ep_param.fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     THROW_IF_NEG(this->ep_param.fd);
     set_nonblock(this->ep_param.fd);
-
     int opt = 1;
     THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)));
     THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)));
@@ -30,6 +35,7 @@ tproxy::tproxy(nat *n) {
     this->ep_param.cb = (void *) tproxy::recv;
     this->ep_param.param = this;
     this->n->ep->add(&this->ep_param);
+    this->done = true;
 }
 
 bool tproxy::recv(ep_param_t *param) {

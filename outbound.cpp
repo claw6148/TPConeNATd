@@ -53,6 +53,7 @@ void outbound::init() {
 
 outbound::~outbound() {
     if (this->done) {
+        if (this->wd) delete this->wd;
         this->n->session_counter[this->int_tuple.first]--;
         this->n->outbound_map.erase(this->int_tuple);
         this->n->port_outbound_map.erase(this->port);

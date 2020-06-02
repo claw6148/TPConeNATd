@@ -75,7 +75,22 @@ outbound *nat::get_outbound(uint16_t nat_port) {
 
 void nat::run() {
     this->ep = new epoll_helper();
-    new icmp_helper(this);
-    new tproxy(this);
+
+    auto *ih = new icmp_helper(this);
+    try {
+        ih->init();
+    } catch (runtime_error &e) {
+        delete ih;
+        throw e;
+    }
+
+    auto *tp = new tproxy(this);
+    try {
+        tp->init();
+    } catch (runtime_error &e) {
+        delete tp;
+        throw e;
+    }
+
     this->ep->run();
 }
