@@ -50,14 +50,15 @@ bool tproxy::recv(ep_param_t *param) {
         ((src_addr_host & 0xFFu) == 0xFF || (dst_addr_host & 0xFFu) == 0xFF)) {
         return true;
     }
-    if (--dgram_data.ttl) {
+    if (dgram_data.ttl > 1) {
+        dgram_data.ttl--;
         _this->n->get_outbound(
                 make_pair(
                         dgram_data.src.sin_addr.s_addr,
                         dgram_data.src.sin_port
                 )
         )->src_nat(&dgram_data);
-    } else {
+    } else if (dgram_data.ttl == 1) {
         icmp_helper::reply_ttl_exceed(&dgram_data);
     }
     return true;

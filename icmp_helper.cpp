@@ -7,6 +7,7 @@
 #include <netinet/ip_icmp.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
+#include <algorithm>
 
 using namespace std;
 
@@ -39,7 +40,14 @@ bool icmp_helper::recv(ep_param_t *param) {
 
     auto *icmp = (struct icmphdr *) ((uint8_t *) ip + ((uint16_t) ip->ihl << 2u));
     BOUND_CHECK(icmp, sizeof(struct icmphdr));
-    if (icmp->type != 11 || icmp->code != 0) return true;
+
+    if (find(
+            _this->type_code,
+            _this->type_code_end,
+            ntohs(*(uint16_t *) &icmp->type)
+    ) == _this->type_code_end) {
+        return true;
+    }
 
     auto *ip_inner = (struct iphdr *) ((uint8_t *) icmp + sizeof(struct icmphdr));
     BOUND_CHECK(ip_inner, sizeof(struct iphdr));
@@ -100,7 +108,7 @@ void icmp_helper::reply_ttl_exceed(dgram_data_t *dgram_data) {
     ip_inner->version = 4;
     ip_inner->ihl = sizeof(struct iphdr) >> 2u;
     ip_inner->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr));
-    ip_inner->ttl = ++dgram_data->ttl;
+    ip_inner->ttl = 1;
     ip_inner->tos = dgram_data->tos;
     ip_inner->protocol = IPPROTO_UDP;
     ip_inner->check = init_ip_inner_check;
