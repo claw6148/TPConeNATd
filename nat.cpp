@@ -38,10 +38,10 @@ outbound *nat::get_outbound(pair<uint32_t, uint16_t> int_tuple) {
     outbound *out;
     auto it = this->outbound_map.find(int_tuple);
     if (it == this->outbound_map.end()) {
-        bool session_limit_reached = this->session_counter[int_tuple.first] + 1 > this->cfg.session_per_src;
-        if (session_limit_reached) {
+        bool port_limit_reached = this->port_counter[int_tuple.first] + 1 > this->cfg.port_per_src;
+        if (port_limit_reached) {
             errno = 0;
-            THROW_IF_EX(session_limit_reached, warn_exception,
+            THROW_IF_EX(port_limit_reached, warn_exception,
                         (char *) inet_ntoa(*reinterpret_cast<in_addr *>(&int_tuple.first)));
         }
         uint16_t nat_port;
@@ -59,7 +59,7 @@ outbound *nat::get_outbound(pair<uint32_t, uint16_t> int_tuple) {
                 throw e;
             }
         }
-        this->session_counter[int_tuple.first]++;
+        this->port_counter[int_tuple.first]++;
         this->outbound_map[int_tuple] = out;
         this->port_outbound_map[nat_port] = out;
     } else {
@@ -77,8 +77,12 @@ void nat::run() {
     this->ep = new epoll_helper();
 
     if (this->cfg.sender_thread > 1) {
-        LOG(LOG_INFO, "using multi-thread sender");
+        LOG(LOG_INFO, "multi-thread sender enabled");
         this->sender = new mt_sender(cfg.sender_thread);
+    }
+
+    if (this->cfg.nat_ip) {
+        LOG(LOG_INFO, "nat loopback enabled");
     }
 
     auto *ih = new icmp_helper(this);

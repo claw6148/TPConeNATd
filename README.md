@@ -3,6 +3,12 @@
 
 ![](https://raw.githubusercontent.com/claw6148/TPConeNATd/master/screenshot.png)
 
+## 功能
+
+- UDP NAT
+- NAT 环回
+- ICMP ALG （路由追踪）
+
 ## 用法
 
 ```
@@ -13,7 +19,7 @@
 -s NAT ip (default: 0.0.0.0, depends on system)
 -n NEW(no reply) timeout (default: 30)
 -e ESTABLISHED timeout (default: 300)
--o Session limit per source ip (default: 65535, unlimited)
+-o Port limit per source ip (default: 65535, unlimited)
 -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: 1)
 -r Sender thread (default: 1)
 -f PID file
@@ -30,14 +36,15 @@
 
 NAT_IP=外部地址
 INT_IF=内部接口
+INT_NET=内部地址范围
 TP_PORT=TPROXY端口
 
 ip rule add fwmark 1 lookup 100
 ip route add local 0/0 dev lo table 100
 
-iptables -t mangle -A PREROUTING -i ${INT_IF} ! -d ${NAT_IP} -p udp -j TPROXY --on-port ${TP_PORT} --tproxy-mark 1
+iptables -t mangle -A PREROUTING -i ${INT_IF} -s ${INT_NET} -p udp -j TPROXY --on-port ${TP_PORT} --tproxy-mark 1
 
-tpconenatd -p ${TP_PORT} -s ${NAT_IP} -d
+TPConeNATd -p ${TP_PORT} -s ${NAT_IP} -d
 ```
 
 ### 进阶配置1 限制每个内部地址的最大端口数
@@ -62,25 +69,26 @@ tpconenatd -p ${TP_PORT} -s ${NAT_IP} -d
 ```
 #!/bin/sh
 
+EXT_IF=外部接口
 NAT_IP=外部地址
 INT_IF=内部接口
-EXT_IF=外部接口
+INT_NET=内部地址范围
 TP_PORT=TPROXY端口
 
 ip rule add fwmark 1 lookup 100
 ip route add local 0/0 dev lo table 100
 
-iptables -t mangle -A PREROUTING -i ${INT_IF} ! -d ${NAT_IP} -p udp --dport 1024:65535 -j TPROXY --on-port ${TP_PORT} --tproxy-mark 1
-iptables -t nat -I POSTROUTING -o ${EXT_IF} -p udp --dport 0:1023 -j SNAT --to ${NAT_IP}:1024-4095
+iptables -t mangle -A PREROUTING -i ${INT_IF} -s ${INT_NET} -p udp --dport 1024:65535 -j TPROXY --on-port ${TP_PORT} --tproxy-mark 1
+iptables -t nat -I POSTROUTING -o ${EXT_IF} -s ${INT_NET} -p udp --dport 0:1023 -j SNAT --to ${NAT_IP}:1024-4095
 
-tpconenatd -p ${TP_PORT} -s ${NAT_IP} -i 4096 -x 65535 -d
+TPConeNATd -p ${TP_PORT} -s ${NAT_IP} -i 4096 -x 65535 -d
 ```
 
 ## 性能
 
 Xeon E5-2670 / Debian 9
 
-- 单线程  `-r 1`
+- 单线程 `-r 1`
 
 载荷长度 | SNAT Mbps | SNAT Kpps | DNAT Mbps | DNAT Kpps
 -|-|-|-|-

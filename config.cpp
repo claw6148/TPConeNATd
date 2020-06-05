@@ -16,7 +16,7 @@ void config::validate() {
     THROW_IF_FALSE(ntohl(this->nat_ip) < 0xe0000000);
     THROW_IF_FALSE(this->new_timeout > 0);
     THROW_IF_FALSE(this->est_timeout > 0);
-    THROW_IF_FALSE(this->session_per_src > 0);
+    THROW_IF_FALSE(this->port_per_src > 0);
     THROW_IF_FALSE(this->nat_type >= 1);
     THROW_IF_FALSE(this->nat_type <= 3);
     THROW_IF_FALSE(this->sender_thread > 0);
@@ -34,7 +34,7 @@ void config::print() {
     PRINT_IP(this->nat_ip);
     PRINT_DEC(this->new_timeout);
     PRINT_DEC(this->est_timeout);
-    PRINT_DEC(this->session_per_src);
+    PRINT_DEC(this->port_per_src);
     PRINT_DEC(this->nat_type);
     PRINT_DEC(this->sender_thread);
 }

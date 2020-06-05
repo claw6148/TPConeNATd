@@ -85,11 +85,12 @@ bool icmp_helper::recv(ep_param_t *param) {
 
 void icmp_helper::reply_ttl_exceed(dgram_data_t *dgram_data) {
     static uint8_t buffer[sizeof(struct icmphdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + 8]{};
-    int reply_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    int fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    THROW_IF_NEG(fd);
     int opt = 1;
-    int ret = setsockopt(reply_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    int ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     if (ret < 0) {
-        close(reply_fd);
+        close(fd);
         THROW_IF_NEG(ret);
     }
 
@@ -129,13 +130,13 @@ void icmp_helper::reply_ttl_exceed(dgram_data_t *dgram_data) {
     icmp->checksum = update_check16(icmp->checksum, init_udp_inner_check, udp_inner->check);
 
     ssize_t send_len = sendto(
-            reply_fd,
+            fd,
             buffer,
             sizeof(buffer),
             0,
             (struct sockaddr *) &dgram_data->src,
             sizeof(struct sockaddr_in)
     );
-    close(reply_fd);
+    close(fd);
     THROW_IF_NEG(send_len);
 }

@@ -32,7 +32,7 @@ void usage_and_exit() {
     printf("  -s NAT ip (default: %s)\n", inet_ntoa(*reinterpret_cast<in_addr *>(&cfg.nat_ip)));
     printf("  -n NEW(no reply) timeout (default: %d)\n", cfg.new_timeout);
     printf("  -e ESTABLISHED timeout (default: %d)\n", cfg.est_timeout);
-    printf("  -o Session limit per source ip (default: %d)\n", cfg.session_per_src);
+    printf("  -o Port limit per source ip (default: %d)\n", cfg.port_per_src);
     printf("  -t NAT type, 1. full-cone, 2. restricted-cone, 3. port-restricted-cone (default: %d)\n", cfg.nat_type);
     printf("  -r Sender thread (default: %d)\n", cfg.sender_thread);
     printf("  -f PID file\n");
@@ -71,7 +71,7 @@ int main(int argc, char *argv[]) {
                     cfg.est_timeout = stol(optarg);
                     break;
                 case 'o':
-                    cfg.session_per_src = stol(optarg);
+                    cfg.port_per_src = stol(optarg);
                     break;
                 case 't':
                     cfg.nat_type = stol(optarg);

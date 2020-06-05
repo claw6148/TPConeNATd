@@ -54,7 +54,7 @@ void outbound::init() {
 outbound::~outbound() {
     if (this->done) {
         delete this->wd;
-        this->n->session_counter[this->int_tuple.first]--;
+        this->n->port_counter[this->int_tuple.first]--;
         this->n->outbound_map.erase(this->int_tuple);
         this->n->port_outbound_map.erase(this->port);
         this->n->ep->del(this->ep_param.fd);
@@ -132,7 +132,19 @@ void outbound::src_nat(dgram_data_t *dgram_data) {
         setsockopt(this->ep_param.fd, IPPROTO_IP, IP_TOS, &dgram_data->tos, sizeof(dgram_data->tos));
         this->tos = dgram_data->tos;
     }
-    if (this->n->cfg.nat_type > 1) {
+    bool loopback = false;
+    if (this->n->cfg.nat_ip && dgram_data->dst.sin_addr.s_addr == this->n->cfg.nat_ip) {
+        auto *out = this->n->get_outbound(dgram_data->dst.sin_port);
+        if (out == nullptr) return;
+        if (dgram_data->src.sin_addr.s_addr == out->int_tuple.first &&
+            dgram_data->src.sin_port == out->int_tuple.second)
+            return;
+        dgram_data->dst.sin_addr.s_addr = out->int_tuple.first;
+        dgram_data->dst.sin_port = out->int_tuple.second;
+        if (out->wd) out->wd->feed(this->n->cfg.est_timeout);
+        loopback = true;
+    }
+    if (!loopback && this->n->cfg.nat_type > 1) {
         this->inbound_filter_set.insert(
                 make_pair(
                         dgram_data->dst.sin_addr.s_addr,
