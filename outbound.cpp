@@ -20,6 +20,10 @@ void outbound::init() {
     int opt = 1;
     THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTTL, &opt, sizeof(opt)));
     THROW_IF_NEG(setsockopt(this->ep_param.fd, IPPROTO_IP, IP_RECVTOS, &opt, sizeof(opt)));
+    if (this->n->cfg.socket_mark > 0) {
+        opt = this->n->cfg.socket_mark;
+        THROW_IF_NEG(setsockopt(this->ep_param.fd, SOL_SOCKET, SO_MARK, &opt, sizeof(opt)));
+    }
     set_nonblock(this->ep_param.fd);
 
     sockaddr_in nat{};

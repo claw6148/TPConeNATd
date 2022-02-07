@@ -37,4 +37,5 @@ void config::print() {
     PRINT_DEC(this->port_per_src);
     PRINT_DEC(this->nat_type);
     PRINT_DEC(this->sender_thread);
+    PRINT_DEC(this->socket_mark);
 }

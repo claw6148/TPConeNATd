@@ -19,6 +19,7 @@ public:
     uint16_t port_per_src = 65535;
     uint8_t nat_type = 1;
     uint16_t sender_thread = 1;
+    uint32_t socket_mark = 0;
 
     void validate();
 

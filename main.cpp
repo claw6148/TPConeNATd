@@ -38,6 +38,7 @@ void usage_and_exit() {
     printf("  -f PID file\n");
     printf("  -l Log level (default: %d)\n", log_level);
     printf("  -d Run as daemon, log to syslog\n");
+    printf("  -m Outbound socket mark\n");
     exit(0);
 }
 
@@ -47,7 +48,7 @@ int main(int argc, char *argv[]) {
     try {
         config cfg;
         char pid_file[0x100]{};
-        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:r:f:l:d")) != -1;) {
+        for (int ch; (ch = getopt(argc, argv, "hp:i:x:s:n:e:o:t:r:f:l:dm:")) != -1;) {
             switch (ch) {
                 case 'h':
                     usage_and_exit();
@@ -87,6 +88,9 @@ int main(int argc, char *argv[]) {
                     break;
                 case 'd':
                     run_as_daemon = true;
+                    break;
+                case 'm':
+                    cfg.socket_mark = stol(optarg);
                     break;
                 default:
                     break;
