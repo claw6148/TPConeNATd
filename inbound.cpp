@@ -17,7 +17,7 @@ void inbound::init() {
     this->fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     THROW_IF_NEG(this->fd);
     int opt = 1;
-    THROW_IF_NEG(setsockopt(this->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)));
+    THROW_IF_NEG(setsockopt(this->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)));
     THROW_IF_NEG(setsockopt(this->fd, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt)));
     sockaddr_in src{};
     src.sin_family = AF_INET;
